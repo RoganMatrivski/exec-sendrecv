@@ -28,6 +28,7 @@ pub struct BrokerHandler {
 }
 
 impl ProtocolHandler for BrokerHandler {
+    #[tracing::instrument(skip(self, conn), err)]
     async fn accept(
         &self,
         conn: iroh::endpoint::Connection,
@@ -41,7 +42,10 @@ impl ProtocolHandler for BrokerHandler {
         let mut buf = Vec::new();
         tokio::io::AsyncReadExt::read_to_end(&mut recv, &mut buf).await?;
 
-        let request: BrokerRequest = serde_json::from_slice(&buf).expect("Failed to parse request");
+        let request: BrokerRequest = serde_json::from_slice(&buf).map_err(|e| {
+            tracing::error!(error = %e, "Failed to parse request");
+            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+        })?;
 
         let response = match request {
             BrokerRequest::Register { code, key } => {
@@ -61,7 +65,10 @@ impl ProtocolHandler for BrokerHandler {
         tokio::io::AsyncWriteExt::write_all(
             &mut send,
             serde_json::to_string(&response)
-                .expect("Failed to serialize broker response")
+                .map_err(|e| {
+                    tracing::error!(error = %e, "Failed to serialize broker response");
+                    std::io::Error::new(std::io::ErrorKind::Other, e)
+                })?
                 .as_bytes(),
         )
         .await?;
@@ -93,6 +100,7 @@ pub fn broker_public_key(client_id: &str) -> PublicKey {
 }
 
 // Receiver calls this to tell the broker "I'm here, my code is X"
+#[tracing::instrument(skip(endpoint), err)]
 pub async fn broker_register(
     endpoint: &Endpoint,
     broker_key: PublicKey,
@@ -132,6 +140,7 @@ pub async fn broker_register(
 }
 
 // Sender calls this to ask the broker "who has code X?"
+#[tracing::instrument(skip(endpoint), err)]
 pub async fn broker_lookup(
     endpoint: &Endpoint,
     broker_key: PublicKey,
@@ -143,8 +152,6 @@ pub async fn broker_lookup(
         .context("Failed to connect to broker")?;
 
     let (mut send, mut recv) = conn.open_bi().await?;
-
-    tracing::trace!("Finding receiver with code {code}");
 
     let request = BrokerRequest::Lookup {
         code: code.to_string(),
