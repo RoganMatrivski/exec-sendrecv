@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use color_eyre::eyre::Context;
 use dashmap::DashMap;
 use iroh::{protocol::ProtocolHandler, Endpoint, PublicKey, SecretKey};
@@ -22,7 +24,7 @@ pub enum BrokerResponse {
 #[derive(Debug, Default)]
 pub struct BrokerHandler {
     // Shared across all connections: short_code -> PublicKey string
-    registry: DashMap<String, String>,
+    registry: Arc<DashMap<String, String>>,
 }
 
 impl ProtocolHandler for BrokerHandler {
@@ -66,6 +68,8 @@ impl ProtocolHandler for BrokerHandler {
 
         // Close our send side so the peer's read_to_end returns
         send.finish()?;
+
+        conn.closed().await;
 
         Ok(())
     }
@@ -139,6 +143,8 @@ pub async fn broker_lookup(
         .context("Failed to connect to broker")?;
 
     let (mut send, mut recv) = conn.open_bi().await?;
+
+    tracing::trace!("Finding receiver with code {code}");
 
     let request = BrokerRequest::Lookup {
         code: code.to_string(),
