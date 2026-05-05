@@ -14,7 +14,10 @@ use iroh::{
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
 use sha2::Digest;
 
+mod broker;
+
 const ALPN: &[u8] = b"i/dont/like/this/rock/robert";
+const BROKER_ALPN: &[u8] = b"i/dont/like/this/rock/robert/broker";
 
 #[derive(Debug, Clone)]
 struct TicketReceiver {
@@ -88,22 +91,29 @@ pub fn ensure_dir(path: impl AsRef<Path>) -> io::Result<PathBuf> {
 }
 
 pub enum Handler {
-    Send(PublicKey, PathBuf),
-    Receive(PathBuf),
+    Send(String, String, PathBuf),
+    Receive(String, PathBuf),
+    Broker(String),
 }
 
 impl Handler {
     pub async fn run(&self) -> color_eyre::eyre::Result<()> {
         match self {
-            Handler::Send(id, path) => {
-                let dht = iroh::address_lookup::dht::DhtAddressLookup::builder();
+            Handler::Send(broker_id, recv_code, path) => {
                 let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
                 let endpoint = Endpoint::builder(presets::N0)
                     .address_lookup(mdns)
-                    .address_lookup(dht)
                     .bind()
                     .await?;
                 let store = MemStore::new();
+
+                // Derive broker's PublicKey from the shared broker_id
+                let broker_key = broker::broker_public_key(broker_id);
+
+                // Ask broker for the receiver's PublicKey
+                tracing::info!("Looking up receiver via broker...");
+                let receiver_key = broker::broker_lookup(&endpoint, broker_key, &recv_code).await?;
+                tracing::info!(?receiver_key, "Found receiver");
 
                 let blobs = BlobsProtocol::new(&store, None);
 
@@ -122,7 +132,7 @@ impl Handler {
                 };
 
                 let addr = EndpointAddr {
-                    id: id.clone(),         // your PublicKey
+                    id: receiver_key,       // your PublicKey
                     addrs: BTreeSet::new(), // empty set -> discovery will be used
                 };
 
@@ -147,12 +157,10 @@ impl Handler {
                 tokio::signal::ctrl_c().await?;
                 router.shutdown().await?;
             }
-            Handler::Receive(filedir) => {
-                let dht = iroh::address_lookup::dht::DhtAddressLookup::builder();
+            Handler::Receive(broker_id, filedir) => {
                 let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
                 let endpoint = Endpoint::builder(presets::N0)
                     .address_lookup(mdns)
-                    .address_lookup(dht)
                     .bind()
                     .await?;
                 let store = MemStore::new();
@@ -160,6 +168,14 @@ impl Handler {
                 let id = endpoint.id();
                 let fingerprint = get_device_code();
                 tracing::info!(?id, "App ID: {fingerprint}");
+                let key = endpoint.id();
+
+                // Derive broker's PublicKey and register ourselves
+                let broker_key = broker::broker_public_key(broker_id);
+                broker::broker_register(&endpoint, broker_key, &fingerprint, key).await?;
+
+                println!("Your code (give this to sender): {fingerprint}");
+                tracing::info!("Registered with broker. Waiting for sender...");
 
                 let handler = TicketReceiver {
                     store,
@@ -168,6 +184,27 @@ impl Handler {
                 };
 
                 let router = Router::builder(endpoint).accept(ALPN, handler).spawn();
+
+                tokio::signal::ctrl_c().await?;
+                router.shutdown().await?;
+            }
+            Handler::Broker(client_id) => {
+                let secret_key = broker::derive_secret_key(&client_id);
+
+                let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
+                let endpoint = Endpoint::builder(presets::N0)
+                    .address_lookup(mdns)
+                    .secret_key(secret_key)
+                    .bind()
+                    .await?;
+
+                tracing::info!("Broker pubkey: {}", endpoint.id());
+
+                let handler = broker::BrokerHandler::default();
+
+                let router = Router::builder(endpoint)
+                    .accept(BROKER_ALPN, handler)
+                    .spawn();
 
                 tokio::signal::ctrl_c().await?;
                 router.shutdown().await?;

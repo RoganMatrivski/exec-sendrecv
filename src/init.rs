@@ -8,6 +8,8 @@ pub struct Args {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
+    pub broker_id: String,
+
     #[command(subcommand)]
     pub command: AppSubcommand,
 }
@@ -22,6 +24,7 @@ pub enum AppSubcommand {
         #[arg(default_value = "./")]
         filedir: std::path::PathBuf,
     },
+    Broker,
 }
 
 const VERBOSE_LEVELS: &[&str] = &["info", "debug", "trace"];
