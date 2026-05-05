@@ -12,6 +12,8 @@ use iroh::{
     Endpoint, EndpointAddr, PublicKey,
 };
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
+use redis::TypedCommands;
+use sha2::Digest;
 
 const ALPN: &[u8] = b"i/dont/like/this/rock/robert";
 
@@ -92,12 +94,18 @@ pub enum Handler {
 }
 
 impl Handler {
-    pub async fn run(&self) -> color_eyre::eyre::Result<()> {
+    pub async fn run(&self, redis_connstr: impl AsRef<str>) -> color_eyre::eyre::Result<()> {
+        tracing::trace!(conn_str = redis_connstr.as_ref(), "Connecting to redis...");
+        let mut code_mgr = RedisGetterSetter::new(redis_connstr.as_ref())?;
+        tracing::trace!("Connected to redis");
+
         match self {
             Handler::Send(id, path) => {
+                let dht = iroh::address_lookup::dht::DhtAddressLookup::builder();
                 let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
                 let endpoint = Endpoint::builder(presets::N0)
                     .address_lookup(mdns)
+                    .address_lookup(dht)
                     .bind()
                     .await?;
                 let store = MemStore::new();
@@ -145,15 +153,19 @@ impl Handler {
                 router.shutdown().await?;
             }
             Handler::Receive(filedir) => {
+                let dht = iroh::address_lookup::dht::DhtAddressLookup::builder();
                 let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
                 let endpoint = Endpoint::builder(presets::N0)
                     .address_lookup(mdns)
+                    .address_lookup(dht)
                     .bind()
                     .await?;
                 let store = MemStore::new();
 
                 let id = endpoint.id();
-                tracing::info!(?id, "App iD");
+                let fingerprint = get_device_code();
+                code_mgr.set(&fingerprint, &id.to_string());
+                tracing::info!(?id, "App ID: {fingerprint}");
 
                 let handler = TicketReceiver {
                     store,
@@ -170,4 +182,63 @@ impl Handler {
 
         Ok(())
     }
+}
+
+trait KeyGetterSetter<C: AsRef<str>, S: Display> {
+    fn get(&mut self, code: C) -> String;
+    fn set(&mut self, code: C, id: S);
+}
+
+trait KeyGetterSetterAsync<C: AsRef<str>, S: Display> {
+    async fn get(&mut self, code: C) -> String;
+    async fn set(&mut self, code: C, id: S);
+}
+
+struct RedisGetterSetter {
+    conn: redis::Connection,
+}
+
+impl RedisGetterSetter {
+    pub fn new(connstr: impl redis::IntoConnectionInfo) -> color_eyre::eyre::Result<Self> {
+        let c = redis::Client::open(connstr)?;
+        tracing::trace!("REDIS: Opened connection");
+        let conn = c.get_connection()?;
+        tracing::trace!("REDIS: Connection GET");
+
+        Ok(Self { conn })
+    }
+}
+
+impl<C: AsRef<str>, S: Display + Send + Sync + redis::ToSingleRedisArg> KeyGetterSetter<C, S>
+    for RedisGetterSetter
+{
+    fn get(&mut self, code: C) -> String {
+        self.conn
+            .get(code.as_ref())
+            .expect("Failed getting code")
+            .expect("Code doesn't exist")
+    }
+
+    fn set(&mut self, code: C, id: S) {
+        self.conn
+            .set(code.as_ref(), id)
+            .expect("Failed setting code")
+    }
+}
+
+pub fn get_device_code() -> String {
+    use machineid_rs::{Encryption, HWIDComponent, IdBuilder};
+
+    let mut builder = IdBuilder::new(Encryption::SHA256);
+    let fingerprint = builder
+        .add_component(HWIDComponent::SystemID)
+        .add_component(HWIDComponent::Username)
+        .build("")
+        .expect("Failed getting device fingerprint");
+
+    let bytes = fingerprint.as_bytes();
+    let hash = sha2::Sha256::digest(bytes);
+    let n = u64::from_le_bytes(hash[..8].try_into().unwrap());
+    let id = (n % 9_900_000_000) + 100_000_000;
+    format!("{id}")
 }

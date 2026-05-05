@@ -12,11 +12,15 @@ mimalloc = "^0.1.48"
 [dependencies]
 clap = { version = "^4.5", features = ["derive"] }
 color-eyre = { version = "0.6.3", features = ["capture-spantrace"] }
+data-encoding = "2.11.0"
 dotenvy = "0.15.7"
-iroh = { version = "0.98.2", features = ["address-lookup-mdns"] }
+iroh = { version = "0.98.2", features = ["address-lookup-mdns", "address-lookup-pkarr-dht"] }
 iroh-blobs = "0.100.0"
+machineid-rs = "1.2.4"
+redis = { version = "1.2.1", features = ["tls-rustls", "tokio-native-tls-comp"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+sha2 = "0.11.0-rc.5"
 supports-color = "3.0.2"
 tokio = { version = "1.52.1", features = ["rt", "signal"] }
 tracing = "0.1.41"
