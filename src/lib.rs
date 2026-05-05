@@ -100,11 +100,7 @@ impl Handler {
     pub async fn run(&self) -> color_eyre::eyre::Result<()> {
         match self {
             Handler::Send(broker_id, recv_code, path) => {
-                let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
-                let endpoint = Endpoint::builder(presets::N0)
-                    .address_lookup(mdns)
-                    .bind()
-                    .await?;
+                let endpoint = get_endpoint_builder()?.bind().await?;
                 let store = MemStore::new();
 
                 // Derive broker's PublicKey from the shared broker_id
@@ -158,11 +154,7 @@ impl Handler {
                 router.shutdown().await?;
             }
             Handler::Receive(broker_id, filedir) => {
-                let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
-                let endpoint = Endpoint::builder(presets::N0)
-                    .address_lookup(mdns)
-                    .bind()
-                    .await?;
+                let endpoint = get_endpoint_builder()?.bind().await?;
                 let store = MemStore::new();
 
                 let id = endpoint.id();
@@ -191,9 +183,7 @@ impl Handler {
             Handler::Broker(client_id) => {
                 let secret_key = broker::derive_secret_key(&client_id);
 
-                let mdns = iroh::address_lookup::mdns::MdnsAddressLookup::builder();
-                let endpoint = Endpoint::builder(presets::N0)
-                    .address_lookup(mdns)
+                let endpoint = get_endpoint_builder()?
                     .secret_key(secret_key)
                     .bind()
                     .await?;
@@ -230,4 +220,29 @@ pub fn get_device_code() -> String {
     let n = u64::from_le_bytes(hash[..8].try_into().unwrap());
     let id = (n % 9_900_000_000) + 100_000_000;
     format!("{id}")
+}
+
+fn get_endpoint_builder() -> color_eyre::eyre::Result<iroh::endpoint::Builder> {
+    let dns = iroh::dns::DnsResolver::builder()
+        .with_nameservers(vec![
+            ("1.1.1.1:443".parse()?, iroh::dns::DnsProtocol::Https),
+            ("1.0.0.1:443".parse()?, iroh::dns::DnsProtocol::Https),
+        ])
+        .build();
+
+    let endpoint_builder = Endpoint::builder(presets::N0)
+        // .clear_address_lookup()
+        .dns_resolver(dns)
+        .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
+    // let endpoint_builder = Endpoint::builder(presets::Minimal)
+    //     .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from_iter(vec![
+    //         iroh::RelayUrl::from_str("https://relay.srv3.rgmtrv.my.id/")?,
+    //     ])))
+    //     .dns_resolver(dns)
+    //     .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
+    //     // .address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns())
+    //     // .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
+    //     .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
+
+    Ok(endpoint_builder)
 }
