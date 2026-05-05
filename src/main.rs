@@ -21,7 +21,7 @@ async fn main() -> Result<(), Report> {
         }
         init::AppSubcommand::Receive { filedir } => exec_sendrecv::Handler::Receive(filedir),
     }
-    .run("redis://redis.srv3.rgmtrv.my.id:60379")
+    .run()
     .await?;
 
     Ok(())
