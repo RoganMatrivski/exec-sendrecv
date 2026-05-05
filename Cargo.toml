@@ -3,6 +3,7 @@ name = "exec-sendrecv"
 version = "0.1.0"
 authors = ["Robin Mauritz <robinmauritzrm@gmail.com>"]
 edition = "2021"
+repository = "https://github.com/RoganMatrivski/exec-sendrecv"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [target.'cfg(target_env = "musl")'.dependencies]
@@ -30,3 +31,8 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 [profile.dev.package.backtrace]
 opt-level = 3
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
