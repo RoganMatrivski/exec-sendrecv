@@ -24,7 +24,7 @@ const BROKER_ALPN: &[u8] = b"i/dont/like/this/rock/robert/broker";
 struct TicketReceiver {
     store: MemStore,
     endpoint: Endpoint,
-    filedir: PathBuf,
+    filedir: Option<PathBuf>,
     on_recv: Option<Arc<dyn Fn(PathBuf) + Send + Sync>>,
 }
 
@@ -66,11 +66,15 @@ impl ProtocolHandler for TicketReceiver {
             serde_json::from_str(&payload).expect("Failed parsing payload");
         let ticket: BlobTicket = payload.blob;
 
-        let dest = PathBuf::from_str(&payload.filename).expect("Failed parsing filename as path");
-
-        let dest_dir = ensure_dir(&self.filedir).expect("Failed using path as dir");
-        let dest = dest_dir.join(&dest);
-        let dest = std::path::absolute(dest)?;
+        let dest = if let Some(d) = &self.filedir {
+            tempfile::NamedTempFile::new_in(d)
+        } else {
+            tempfile::NamedTempFile::new()
+        }
+        .expect("Failed to create temporary file")
+        .into_temp_path()
+        .keep()
+        .expect("Failed to get temporary path");
 
         let dl = store.downloader(&endpoint);
 
@@ -85,7 +89,7 @@ impl ProtocolHandler for TicketReceiver {
             .expect("Failed copying from memory to local");
 
         if let Some(f) = self.on_recv.clone() {
-            f(dest);
+            f(dest.to_path_buf());
         }
 
         Ok(())
@@ -203,7 +207,8 @@ impl Handler {
 
                 let handler = TicketReceiver {
                     store,
-                    filedir: filedir.clone(),
+                    // filedir: filedir.clone(),
+                    filedir: None,
                     endpoint: endpoint.clone(),
                     on_recv: on_recv.clone(),
                 };
@@ -263,19 +268,20 @@ fn get_endpoint_builder() -> color_eyre::eyre::Result<iroh::endpoint::Builder> {
     //     ])
     //     .build();
 
-    let endpoint_builder = Endpoint::builder(presets::N0)
-        // .clear_address_lookup()
-        // .dns_resolver(dns)
-        .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
+    // let endpoint_builder = Endpoint::builder(presets::N0)
+    // .clear_address_lookup()
+    // .dns_resolver(dns)
+    // .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
     // let endpoint_builder = Endpoint::builder(presets::Minimal)
-    //     .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from_iter(vec![
-    //         iroh::RelayUrl::from_str("https://relay.srv3.rgmtrv.my.id/")?,
-    //     ])))
-    //     .dns_resolver(dns)
-    //     .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
-    //     // .address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns())
-    //     // .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
-    //     .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
+    let endpoint_builder = Endpoint::builder(presets::N0)
+        // .relay_mode(iroh::RelayMode::Default(iroh::RelayMap::from_iter(vec![
+        //     iroh::RelayUrl::from_str("https://relay.srv3.rgmtrv.my.id/")?,
+        // ])))
+        //     .dns_resolver(dns)
+        .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
+        .address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns())
+        .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
+        .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
 
     Ok(endpoint_builder)
 }
