@@ -162,9 +162,20 @@ impl Handler {
                 tracing::info!(?id, "App ID: {fingerprint}");
                 let key = endpoint.id();
 
+                let broker_id = broker_id.split_whitespace().collect::<Vec<_>>().join("");
+
                 // Derive broker's PublicKey and register ourselves
-                let broker_key = broker::broker_public_key(broker_id);
+                let broker_key = broker::broker_public_key(&broker_id);
                 broker::broker_register(&endpoint, broker_key, &fingerprint, key).await?;
+
+                // Split digits to three like rustdesk or anydesk
+                let fingerprint = {
+                    use digit_group::FormatGroup;
+
+                    fingerprint
+                        .parse::<usize>()?
+                        .format_custom('.', ' ', 3, 3, false)
+                };
 
                 println!("Your code (give this to sender): {fingerprint}");
                 tracing::info!("Registered with broker. Waiting for sender...");

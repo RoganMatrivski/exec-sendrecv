@@ -953,6 +953,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "digit_group"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cbc3e2ec1c69f60bbb029f5fd3c861bf8b242c33985f6a7677d91d7dd010227"
+
+[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1108,6 +1114,7 @@ dependencies = [
  "color-eyre",
  "dashmap",
  "data-encoding",
+ "digit_group",
  "dotenvy",
  "iroh",
  "iroh-blobs",
