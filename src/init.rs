@@ -21,8 +21,7 @@ pub enum AppSubcommand {
         file: std::path::PathBuf,
     },
     Receive {
-        #[arg(default_value = "./")]
-        filedir: std::path::PathBuf,
+        filedir: Option<std::path::PathBuf>,
     },
     Broker,
 }

@@ -2,7 +2,6 @@ use std::{
     collections::BTreeSet,
     fmt::{self, Display},
     path::{Path, PathBuf},
-    str::FromStr,
     sync::Arc,
 };
 
@@ -10,7 +9,7 @@ use color_eyre::eyre::{Context, ContextCompat};
 use iroh::{
     endpoint::presets,
     protocol::{ProtocolHandler, Router},
-    Endpoint, EndpointAddr, PublicKey,
+    Endpoint, EndpointAddr,
 };
 use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
 use sha2::Digest;
@@ -116,7 +115,7 @@ pub enum Handler {
     Receive(
         String,
         Option<Arc<dyn Fn(PathBuf) -> () + Send + Sync>>,
-        PathBuf,
+        Option<PathBuf>,
     ),
     Broker(String),
 }
@@ -207,8 +206,7 @@ impl Handler {
 
                 let handler = TicketReceiver {
                     store,
-                    // filedir: filedir.clone(),
-                    filedir: None,
+                    filedir: filedir.clone(),
                     endpoint: endpoint.clone(),
                     on_recv: on_recv.clone(),
                 };

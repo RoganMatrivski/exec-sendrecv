@@ -1,5 +1,3 @@
-use std::str::FromStr;
-
 use color_eyre::Report;
 
 mod init;
