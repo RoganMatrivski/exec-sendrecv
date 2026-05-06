@@ -20,9 +20,13 @@ async fn main() -> Result<(), Report> {
         init::AppSubcommand::Send { key, file } => {
             exec_sendrecv::Handler::Send(broker_id, key, file)
         }
-        init::AppSubcommand::Receive { filedir } => {
-            exec_sendrecv::Handler::Receive(broker_id, filedir)
-        }
+        init::AppSubcommand::Receive { filedir } => exec_sendrecv::Handler::Receive(
+            broker_id,
+            Some(std::sync::Arc::new(|p| {
+                dbg!(p);
+            })),
+            filedir,
+        ),
         init::AppSubcommand::Broker => exec_sendrecv::Handler::Broker(broker_id),
     }
     .run()

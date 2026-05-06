@@ -1,8 +1,9 @@
 use std::{
     collections::BTreeSet,
-    fmt::Display,
+    fmt::{self, Display},
     path::{Path, PathBuf},
     str::FromStr,
+    sync::Arc,
 };
 
 use color_eyre::eyre::{Context, ContextCompat};
@@ -19,11 +20,23 @@ mod broker;
 const ALPN: &[u8] = b"i/dont/like/this/rock/robert";
 const BROKER_ALPN: &[u8] = b"i/dont/like/this/rock/robert/broker";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct TicketReceiver {
     store: MemStore,
     endpoint: Endpoint,
     filedir: PathBuf,
+    on_recv: Option<Arc<dyn Fn(PathBuf) + Send + Sync>>,
+}
+
+impl fmt::Debug for TicketReceiver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TicketReceiver")
+            .field("store", &self.store)
+            .field("endpoint", &self.endpoint)
+            .field("filedir", &self.filedir)
+            .field("on_recv", &self.on_recv.as_ref().map(|_| "<fn>"))
+            .finish()
+    }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -67,9 +80,13 @@ impl ProtocolHandler for TicketReceiver {
 
         store
             .blobs()
-            .export(ticket.hash(), dest)
+            .export(ticket.hash(), &dest)
             .await
             .expect("Failed copying from memory to local");
+
+        if let Some(f) = self.on_recv.clone() {
+            f(dest);
+        }
 
         Ok(())
     }
@@ -92,7 +109,11 @@ pub fn ensure_dir(path: impl AsRef<Path>) -> io::Result<PathBuf> {
 
 pub enum Handler {
     Send(String, String, PathBuf),
-    Receive(String, PathBuf),
+    Receive(
+        String,
+        Option<Arc<dyn Fn(PathBuf) -> () + Send + Sync>>,
+        PathBuf,
+    ),
     Broker(String),
 }
 
@@ -105,6 +126,8 @@ impl Handler {
 
                 // Derive broker's PublicKey from the shared broker_id
                 let broker_key = broker::broker_public_key(broker_id);
+
+                let recv_code = recv_code.split_whitespace().collect::<Vec<_>>().join("");
 
                 // Ask broker for the receiver's PublicKey
                 tracing::info!("Looking up receiver via broker...");
@@ -153,7 +176,7 @@ impl Handler {
                 tokio::signal::ctrl_c().await?;
                 router.shutdown().await?;
             }
-            Handler::Receive(broker_id, filedir) => {
+            Handler::Receive(broker_id, on_recv, filedir) => {
                 let endpoint = get_endpoint_builder()?.bind().await?;
                 let store = MemStore::new();
 
@@ -161,8 +184,6 @@ impl Handler {
                 let fingerprint = get_device_code();
                 tracing::info!(?id, "App ID: {fingerprint}");
                 let key = endpoint.id();
-
-                let broker_id = broker_id.split_whitespace().collect::<Vec<_>>().join("");
 
                 // Derive broker's PublicKey and register ourselves
                 let broker_key = broker::broker_public_key(&broker_id);
@@ -184,6 +205,7 @@ impl Handler {
                     store,
                     filedir: filedir.clone(),
                     endpoint: endpoint.clone(),
+                    on_recv: on_recv.clone(),
                 };
 
                 let router = Router::builder(endpoint).accept(ALPN, handler).spawn();
