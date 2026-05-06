@@ -71,7 +71,7 @@ impl ProtocolHandler for TicketReceiver {
         pb.set_message("receiving ticket");
 
         let result: Result<(), iroh::protocol::AcceptError> = async {
-            let mut recv = conn.accept_uni().await?;
+            let (mut send_ack, mut recv) = conn.accept_bi().await?;
 
             let mut buf = Vec::new();
             tokio::io::AsyncReadExt::read_to_end(&mut recv, &mut buf).await?;
@@ -135,6 +135,9 @@ impl ProtocolHandler for TicketReceiver {
             if let Some(f) = self.on_recv.clone() {
                 f(dest.to_path_buf());
             }
+
+            tokio::io::AsyncWriteExt::write_all(&mut send_ack, b"done").await?;
+            send_ack.finish()?;
 
             Ok(())
         }
@@ -259,7 +262,7 @@ impl Handler {
                     .await
                     .wrap_err("Failed to connect to iroh endpoint")?;
 
-                let mut send = conn.open_uni().await?;
+                let (mut send, mut recv_ack) = conn.open_bi().await?;
 
                 tokio::io::AsyncWriteExt::write_all(
                     &mut send,
@@ -272,8 +275,17 @@ impl Handler {
                     .accept(iroh_blobs::ALPN, blobs)
                     .spawn();
 
-                tokio::signal::ctrl_c().await?;
-                router.shutdown().await?;
+                // wait for receiver to signal done
+                let mut ack = Vec::new();
+                tokio::io::AsyncReadExt::read_to_end(&mut recv_ack, &mut ack).await?;
+
+                conn.close(0u32.into(), b"bye");
+                drop(conn);
+
+                tracing::info!("Receiver done, shutting down.");
+                tokio::time::timeout(std::time::Duration::from_secs(3), router.shutdown())
+                    .await
+                    .ok();
             }
             Handler::Receive(broker_id, on_recv, filedir) => {
                 let endpoint = get_endpoint_builder()?.bind().await?;
