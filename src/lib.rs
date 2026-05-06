@@ -11,13 +11,20 @@ use iroh::{
     protocol::{ProtocolHandler, Router},
     Endpoint, EndpointAddr,
 };
-use iroh_blobs::{store::mem::MemStore, ticket::BlobTicket, BlobsProtocol};
+use iroh_blobs::{
+    api::{blobs::AddProgressItem, downloader::DownloadProgressItem},
+    store::mem::MemStore,
+    ticket::BlobTicket,
+    BlobsProtocol,
+};
 use sha2::Digest;
 
 mod broker;
 
 const ALPN: &[u8] = b"i/dont/like/this/rock/robert";
 const BROKER_ALPN: &[u8] = b"i/dont/like/this/rock/robert/broker";
+
+use indicatif::{ProgressBar, ProgressStyle};
 
 #[derive(Clone)]
 struct TicketReceiver {
@@ -44,6 +51,9 @@ struct Payload<B: Display, F: Display> {
     filename: F,
 }
 
+use futures_util::StreamExt;
+use std::time::Duration;
+
 impl ProtocolHandler for TicketReceiver {
     async fn accept(
         &self,
@@ -52,46 +62,94 @@ impl ProtocolHandler for TicketReceiver {
         let store = self.store.clone();
         let endpoint = self.endpoint.clone();
 
-        let mut recv = conn.accept_uni().await?;
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("{msg} [{spinner}] {pos} bytes")
+                .expect("invalid progress style"),
+        );
+        pb.enable_steady_tick(Duration::from_millis(80));
+        pb.set_message("receiving ticket");
 
-        let mut buf = Vec::new();
-        tokio::io::AsyncReadExt::read_to_end(&mut recv, &mut buf).await?;
+        let result: Result<(), iroh::protocol::AcceptError> = async {
+            let mut recv = conn.accept_uni().await?;
 
-        let payload = String::from_utf8(buf).expect("Failed to parse payload");
+            let mut buf = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut recv, &mut buf).await?;
 
-        tracing::debug!(payload, "RECV Payload");
+            let payload = String::from_utf8(buf).expect("Failed to parse payload");
+            let payload: Payload<BlobTicket, std::borrow::Cow<'_, str>> =
+                serde_json::from_str(&payload).expect("Failed parsing payload");
+            let ticket: BlobTicket = payload.blob;
 
-        let payload: Payload<BlobTicket, std::borrow::Cow<'_, str>> =
-            serde_json::from_str(&payload).expect("Failed parsing payload");
-        let ticket: BlobTicket = payload.blob;
+            let dest = if let Some(d) = &self.filedir {
+                tempfile::NamedTempFile::new_in(d)
+            } else {
+                tempfile::NamedTempFile::new()
+            }
+            .expect("Failed to create temporary file")
+            .into_temp_path()
+            .keep()
+            .expect("Failed to get temporary path");
 
-        let dest = if let Some(d) = &self.filedir {
-            tempfile::NamedTempFile::new_in(d)
-        } else {
-            tempfile::NamedTempFile::new()
+            pb.set_message("downloading blob");
+
+            let dl = store.downloader(&endpoint);
+            let mut progress = dl
+                .download(ticket.hash(), Some(ticket.addr().id))
+                .stream()
+                .await
+                .expect("Failed to start downloading");
+
+            while let Some(item) = progress.next().await {
+                match item {
+                    DownloadProgressItem::TryProvider { .. } => {
+                        pb.set_message("trying provider");
+                    }
+                    DownloadProgressItem::ProviderFailed { .. } => {
+                        pb.set_message("provider failed; trying next");
+                    }
+                    DownloadProgressItem::Progress(n) => {
+                        pb.set_position(n);
+                    }
+                    DownloadProgressItem::PartComplete { .. } => {
+                        pb.set_message("download complete");
+                    }
+                    DownloadProgressItem::DownloadError => {
+                        pb.abandon_with_message("download error");
+                        return Err(std::io::Error::other("download error").into());
+                    }
+                    DownloadProgressItem::Error(err) => {
+                        pb.abandon_with_message("failed");
+                        return Err(err.into());
+                    }
+                }
+            }
+
+            pb.set_message("writing to disk");
+            store
+                .blobs()
+                .export(ticket.hash(), &dest)
+                .await
+                .expect("Failed copying from memory to local");
+
+            if let Some(f) = self.on_recv.clone() {
+                f(dest.to_path_buf());
+            }
+
+            Ok(())
         }
-        .expect("Failed to create temporary file")
-        .into_temp_path()
-        .keep()
-        .expect("Failed to get temporary path");
+        .await;
 
-        let dl = store.downloader(&endpoint);
-
-        dl.download(ticket.hash(), Some(ticket.addr().id)).await?;
-
-        tracing::info!(?dest, "Done downloading. Copying...");
-
-        store
-            .blobs()
-            .export(ticket.hash(), &dest)
-            .await
-            .expect("Failed copying from memory to local");
-
-        if let Some(f) = self.on_recv.clone() {
-            f(dest.to_path_buf());
+        match result {
+            Ok(()) => {
+                pb.finish_with_message("received");
+                Ok(())
+            }
+            Err(err) => {
+                pb.abandon_with_message("failed");
+                Err(err)
+            }
         }
-
-        Ok(())
     }
 }
 
@@ -140,7 +198,45 @@ impl Handler {
                 let blobs = BlobsProtocol::new(&store, None);
 
                 tracing::debug!(?path, "Hashing file");
-                let tag = store.blobs().add_path(&path).await?;
+
+                let add = store.blobs().add_path(&path);
+                let mut stream = add.stream().await;
+
+                let pb = ProgressBar::new(0);
+                pb.set_style(
+                    ProgressStyle::with_template("{msg} [{bar:40.cyan/blue}] {pos}/{len}")
+                        .expect("invalid progress style"),
+                );
+                pb.set_message("adding file");
+
+                let mut tag = None;
+
+                while let Some(item) = stream.next().await {
+                    match item {
+                        AddProgressItem::Size(size) => {
+                            pb.set_length(size);
+                        }
+                        AddProgressItem::CopyProgress(size)
+                        | AddProgressItem::OutboardProgress(size) => {
+                            pb.set_position(size);
+                        }
+                        AddProgressItem::CopyDone => {
+                            pb.set_message("hashing");
+                        }
+                        AddProgressItem::Done(tt) => {
+                            tag = Some(tt);
+                            break;
+                        }
+                        AddProgressItem::Error(err) => {
+                            pb.abandon_with_message("failed");
+                            return Err(err.into());
+                        }
+                    }
+                }
+
+                let tt = tag.expect("add_path ended without Done");
+                let tag = tt.hash_and_format();
+                pb.finish_with_message("done");
 
                 let ticket = BlobTicket::new(endpoint.addr(), tag.hash, tag.format);
                 let filename = path
