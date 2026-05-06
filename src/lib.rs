@@ -223,16 +223,16 @@ pub fn get_device_code() -> String {
 }
 
 fn get_endpoint_builder() -> color_eyre::eyre::Result<iroh::endpoint::Builder> {
-    let dns = iroh::dns::DnsResolver::builder()
-        .with_nameservers(vec![
-            ("1.1.1.1:443".parse()?, iroh::dns::DnsProtocol::Https),
-            ("1.0.0.1:443".parse()?, iroh::dns::DnsProtocol::Https),
-        ])
-        .build();
+    // let dns = iroh::dns::DnsResolver::builder()
+    //     .with_nameservers(vec![
+    //         ("1.1.1.1:443".parse()?, iroh::dns::DnsProtocol::Https),
+    //         ("1.0.0.1:443".parse()?, iroh::dns::DnsProtocol::Https),
+    //     ])
+    //     .build();
 
     let endpoint_builder = Endpoint::builder(presets::N0)
         // .clear_address_lookup()
-        .dns_resolver(dns)
+        // .dns_resolver(dns)
         .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
     // let endpoint_builder = Endpoint::builder(presets::Minimal)
     //     .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::from_iter(vec![
