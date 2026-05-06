@@ -11,6 +11,7 @@ use color_eyre::{
     Report,
 };
 use futures_util::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use iroh::{
     endpoint::presets,
     protocol::{ProtocolHandler, Router},
@@ -23,7 +24,6 @@ use iroh_blobs::{
     BlobsProtocol,
 };
 use sha2::Digest;
-use indicatif::{ProgressBar, ProgressStyle};
 
 mod broker;
 mod init;
@@ -70,14 +70,6 @@ impl ProtocolHandler for TicketReceiver {
         let store = self.store.clone();
         let endpoint = self.endpoint.clone();
 
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::with_template("{msg} [{spinner}] {pos} bytes")
-                .expect("invalid progress style"),
-        );
-        pb.enable_steady_tick(Duration::from_millis(80));
-        pb.set_message("receiving ticket");
-
         let result: Result<(), iroh::protocol::AcceptError> = async {
             let (mut send_ack, mut recv) = conn.accept_bi().await?;
 
@@ -99,8 +91,6 @@ impl ProtocolHandler for TicketReceiver {
             .keep()
             .expect("Failed to get temporary path");
 
-            pb.set_message("downloading blob");
-
             let dl = store.downloader(&endpoint);
             let mut progress = dl
                 .download(ticket.hash(), Some(ticket.addr().id))
@@ -108,32 +98,34 @@ impl ProtocolHandler for TicketReceiver {
                 .await
                 .expect("Failed to start downloading");
 
+            let mut last_print = std::time::Instant::now();
+            let print_every = Duration::from_secs(1);
+
             while let Some(item) = progress.next().await {
                 match item {
-                    DownloadProgressItem::TryProvider { .. } => {
-                        pb.set_message("trying provider");
-                    }
-                    DownloadProgressItem::ProviderFailed { .. } => {
-                        pb.set_message("provider failed; trying next");
-                    }
                     DownloadProgressItem::Progress(n) => {
-                        pb.set_position(n);
+                        if last_print.elapsed() >= print_every {
+                            let mb = n as f64 / 1_000_000.0;
+                            tracing::info!("Downloading... {mb:.1} MB");
+                            last_print = std::time::Instant::now();
+                        }
+                    }
+                    DownloadProgressItem::TryProvider { .. } => {
+                        tracing::info!("Connecting to provider...");
                     }
                     DownloadProgressItem::PartComplete { .. } => {
-                        pb.set_message("download complete");
+                        tracing::info!("Download complete, writing to disk...");
                     }
                     DownloadProgressItem::DownloadError => {
-                        pb.abandon_with_message("download error");
                         return Err(std::io::Error::other("download error").into());
                     }
                     DownloadProgressItem::Error(err) => {
-                        pb.abandon_with_message("failed");
                         return Err(err.into());
                     }
+                    _ => {}
                 }
             }
 
-            pb.set_message("writing to disk");
             store
                 .blobs()
                 .export(ticket.hash(), &dest)
@@ -153,11 +145,11 @@ impl ProtocolHandler for TicketReceiver {
 
         match result {
             Ok(()) => {
-                pb.finish_with_message("received");
+                tracing::info!("received");
                 Ok(())
             }
             Err(err) => {
-                pb.abandon_with_message("failed");
+                tracing::error!("failed");
                 Err(err)
             }
         }
@@ -168,7 +160,10 @@ pub fn ensure_dir(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     let path = path.as_ref();
 
     if path.as_os_str().is_empty() {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "empty path"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty path",
+        ));
     }
 
     // Creates it if missing; succeeds if it already exists as a directory.
@@ -416,9 +411,7 @@ async fn main() -> Result<(), Report> {
     });
 
     match args.command {
-        init::AppSubcommand::Send { key, file } => {
-            Handler::Send(broker_id, key, file)
-        }
+        init::AppSubcommand::Send { key, file } => Handler::Send(broker_id, key, file),
         init::AppSubcommand::Receive { filedir } => Handler::Receive(
             broker_id,
             Some(std::sync::Arc::new(move |p| {
