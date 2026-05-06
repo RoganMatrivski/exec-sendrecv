@@ -43,7 +43,13 @@ pub fn initialize() -> Result<Args, Report> {
 
     let supports_color = supports_color::on(supports_color::Stream::Stderr).is_some();
 
-    color_eyre::install()?;
+    if supports_color {
+        color_eyre::install()?;
+    } else {
+        color_eyre::config::HookBuilder::new()
+            .theme(color_eyre::config::Theme::new())
+            .install()?;
+    }
 
     let args = Args::parse();
 
@@ -54,7 +60,6 @@ pub fn initialize() -> Result<Args, Report> {
         .map(|i| VERBOSE_LEVELS[i as usize])
         .unwrap_or("warn");
 
-    // Try to build from RUST_LOG, or fall back to a base "warn"
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn"))
         .add_directive(format!("{}={}", pkg_name!(), crate_level).parse().unwrap());
