@@ -40,8 +40,7 @@ const BROKER_ALPN: &[u8] = b"i/dont/like/this/rock/robert/broker";
 
 #[derive(Clone)]
 struct TicketReceiver {
-    store: Store,
-    endpoint: Endpoint,
+    node: Node,
     filedir: Option<PathBuf>,
     on_recv: Option<Arc<dyn Fn(PathBuf) + Send + Sync>>,
 }
@@ -49,8 +48,8 @@ struct TicketReceiver {
 impl fmt::Debug for TicketReceiver {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TicketReceiver")
-            .field("store", &self.store)
-            .field("endpoint", &self.endpoint)
+            .field("store", &self.node.store)
+            .field("endpoint", &self.node.endpoint())
             .field("filedir", &self.filedir)
             .field("on_recv", &self.on_recv.as_ref().map(|_| "<fn>"))
             .finish()
@@ -116,8 +115,7 @@ impl ProtocolHandler for TicketReceiver {
         async move {
             tracing::info!("accepting incoming ticket transfer");
 
-            let store = self.store.clone();
-            let endpoint = self.endpoint.clone();
+            let store = self.node.store.clone();
 
             let result: Result<(), iroh::protocol::AcceptError> = async {
                 tracing::debug!("waiting for bidi stream");
@@ -156,12 +154,10 @@ impl ProtocolHandler for TicketReceiver {
                     "starting collection download"
                 );
 
-                let req = HashAndFormat::hash_seq(ticket.hash());
-
-                store
-                    .downloader(&endpoint)
-                    .download(req, Some(ticket.addr().id))
-                    .await?;
+                self.node
+                    .get_collection(ticket.hash(), ticket.addr().clone())
+                    .await
+                    .expect("Failed to download collection");
 
                 tracing::info!("collection download completed");
 
@@ -317,6 +313,7 @@ pub fn ensure_dir(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+#[derive(Debug, Clone)]
 struct Node {
     store: Store,
     router: Router,
@@ -541,7 +538,6 @@ impl Handler {
             Handler::Receive(broker_id, on_recv, filedir) => {
                 let node = Node::new().await?;
                 let endpoint = node.endpoint().clone();
-                let store = node.store;
 
                 let id = endpoint.id();
                 let fingerprint = get_device_code();
@@ -562,9 +558,8 @@ impl Handler {
                 tracing::info!("Registered with broker. Waiting for sender...");
 
                 let handler = TicketReceiver {
-                    store: store.into(),
+                    node,
                     filedir: filedir.clone(),
-                    endpoint: endpoint.clone(),
                     on_recv: on_recv.clone(),
                 };
 
