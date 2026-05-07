@@ -1,34 +1,24 @@
 use std::{
-    collections::{BTreeSet, HashMap},
-    fmt::{self, Display},
-    path::{Component, Path, PathBuf},
+    collections::BTreeSet,
+    fmt::{self},
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
-use color_eyre::{
-    eyre::{Context, ContextCompat},
-    Report,
-};
-use futures_util::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
+use color_eyre::{eyre::Context, Report};
 use iroh::{
     endpoint::presets,
     protocol::{ProtocolHandler, Router},
-    Endpoint, EndpointAddr, RelayUrl,
+    Endpoint, EndpointAddr,
 };
 use iroh_blobs::{
     api::{
-        blobs::{
-            AddPathOptions, AddProgressItem, ExportMode, ExportOptions, ExportProgressItem,
-            ImportMode,
-        },
-        downloader::DownloadProgressItem,
-        remote::{GetProgressItem, GetStreamPair},
+        blobs::{AddPathOptions, ExportMode, ExportOptions, ImportMode},
         Store, TempTag,
     },
     format::collection::Collection,
-    store::{fs::FsStore, mem::MemStore},
+    store::fs::FsStore,
     ticket::BlobTicket,
     BlobFormat, BlobsProtocol, Hash, HashAndFormat,
 };
@@ -37,7 +27,6 @@ use tracing::Instrument;
 use walkdir::WalkDir;
 
 mod broker;
-mod collection_example;
 mod init;
 
 // Avoid musl's default allocator due to lackluster performance
@@ -66,12 +55,6 @@ impl fmt::Debug for TicketReceiver {
             .field("on_recv", &self.on_recv.as_ref().map(|_| "<fn>"))
             .finish()
     }
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct Payload<B: Display, F: Display> {
-    blob: B,
-    filename: F,
 }
 
 #[cfg(unix)]
@@ -168,12 +151,12 @@ impl ProtocolHandler for TicketReceiver {
                     "parsed blob ticket"
                 );
 
-                let req = HashAndFormat::hash_seq(ticket.hash());
-
                 tracing::info!(
                     source = ?ticket.addr(),
                     "starting collection download"
                 );
+
+                let req = HashAndFormat::hash_seq(ticket.hash());
 
                 store
                     .downloader(&endpoint)
@@ -182,7 +165,6 @@ impl ProtocolHandler for TicketReceiver {
 
                 tracing::info!("collection download completed");
 
-                use iroh_blobs::api::downloader::{DownloadOptions, SplitStrategy};
                 use iroh_blobs::format::collection::Collection;
 
                 tracing::debug!(
@@ -205,13 +187,13 @@ impl ProtocolHandler for TicketReceiver {
 
                     tempfile::tempdir_in(d)
                         .expect("Failed to create temp output dir")
-                        .into_path()
+                        .keep()
                 } else {
                     tracing::debug!("using system temporary directory");
 
                     tempfile::tempdir()
                         .expect("Failed to create temp output dir")
-                        .into_path()
+                        .keep()
                 };
 
                 tracing::info!(
@@ -335,112 +317,6 @@ pub fn ensure_dir(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-/// Turn a path into a safe `a/b/c.txt` style collection key.
-fn relative_name(path: impl AsRef<Path>) -> color_eyre::eyre::Result<String> {
-    let mut parts = Vec::new();
-
-    for c in path.as_ref().components() {
-        match c {
-            Component::Normal(x) => {
-                parts.push(x.to_str().context("non-utf8 path component")?.to_owned())
-            }
-            _ => return Err(eyre::eyre!("invalid path component")),
-        }
-    }
-
-    Ok(parts.join("/"))
-}
-
-/// Import a file or a folder into the blob store and build a `Collection`.
-///
-/// Each file becomes one blob, and the collection stores:
-///     logical name -> blob hash
-async fn import_collection(
-    store: &MemStore,
-    input: &Path,
-) -> color_eyre::eyre::Result<(Collection, Vec<TempTag>)> {
-    let input = input.canonicalize()?;
-    let base = input.parent().context("input has no parent")?;
-
-    let mut collection = Collection::default();
-    let mut keepalive = Vec::new();
-
-    for entry in WalkDir::new(&input) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-
-        let file_path = entry.into_path();
-        let rel = file_path.strip_prefix(base)?;
-        let name = relative_name(rel)?;
-
-        let mut stream = store
-            .blobs()
-            .add_path_with_opts(AddPathOptions {
-                path: file_path,
-                mode: ImportMode::TryReference,
-                format: BlobFormat::Raw,
-            })
-            .stream()
-            .await;
-
-        let mut done = None;
-
-        while let Some(item) = stream.next().await {
-            match item {
-                AddProgressItem::Done(tt) => {
-                    done = Some(tt);
-                    break;
-                }
-                AddProgressItem::Error(err) => return Err(err.into()),
-                _ => {}
-            }
-        }
-
-        let tt = done.context("add_path ended without Done")?;
-        collection.push(name, tt.hash());
-        keepalive.push(tt);
-    }
-
-    Ok((collection, keepalive))
-}
-
-/// Export a collection into a destination directory.
-async fn export_collection(
-    store: &MemStore,
-    collection: &Collection,
-    out_dir: &Path,
-) -> color_eyre::eyre::Result<()> {
-    for (name, hash) in collection.iter() {
-        let target = out_dir.join(name);
-
-        if let Some(parent) = target.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
-        let mut stream = store
-            .blobs()
-            .export_with_opts(ExportOptions {
-                hash: *hash,
-                target,
-                mode: ExportMode::Copy,
-            })
-            .stream()
-            .await;
-
-        while let Some(item) = stream.next().await {
-            match item {
-                ExportProgressItem::Done => break,
-                ExportProgressItem::Error(err) => return Err(err.into()),
-                _ => {}
-            }
-        }
-    }
-
-    Ok(())
-}
-
 struct Node {
     store: Store,
     router: Router,
@@ -475,6 +351,7 @@ impl Node {
         Ok(addr)
     }
 
+    #[allow(dead_code)]
     async fn list_hashes(&self) -> eyre::Result<Vec<Hash>> {
         self.store
             .blobs()
@@ -521,6 +398,7 @@ impl Node {
         Ok(temptag)
     }
 
+    #[allow(dead_code)]
     pub async fn get_collection(&self, hash: Hash, source_addr: EndpointAddr) -> eyre::Result<()> {
         let req = HashAndFormat::hash_seq(hash);
         self.store
