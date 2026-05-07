@@ -38,6 +38,7 @@ walkdir = "2.5.0"
 
 # This will be removed after collection_example gone
 anyhow = "1.0.102"
+dunce = "1.0.5"
 
 [target.'cfg(not(windows))'.dependencies]
 libc = "*"

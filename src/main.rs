@@ -74,6 +74,38 @@ struct Payload<B: Display, F: Display> {
     filename: F,
 }
 
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.extension()
+        .map(|e| e == "exe" || e == "bat" || e == "cmd")
+        .unwrap_or(false)
+}
+
+fn find_executable_or_first(dir: &Path) -> Option<PathBuf> {
+    let files: Vec<PathBuf> = WalkDir::new(dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .collect();
+
+    // Try to find first executable
+    if let Some(exec) = files.iter().find(|p| is_executable(p)) {
+        return Some(exec.clone());
+    }
+
+    // Fallback: return first file regardless
+    files.into_iter().next()
+}
+
 impl ProtocolHandler for TicketReceiver {
     async fn accept(
         &self,
@@ -210,11 +242,17 @@ impl ProtocolHandler for TicketReceiver {
 
                 // For single-file transfers, keep the old behavior and hand back the file path.
                 // For folders, hand back the output directory.
-                let recv_path = if collection.len() == 1 {
+                let base_path = if collection.len() == 1 {
                     let (name, _) = collection.iter().next().unwrap();
                     dest_root.join(name)
                 } else {
                     dest_root.clone()
+                };
+
+                let recv_path = if base_path.is_dir() {
+                    find_executable_or_first(&base_path).unwrap_or(base_path)
+                } else {
+                    base_path
                 };
 
                 tracing::info!(
@@ -434,23 +472,29 @@ impl Node {
             .context("Failed to list hashes")
     }
 
-    async fn create_collection<I, P>(&self, paths: I) -> eyre::Result<TempTag>
+    async fn create_collection<I, P>(&self, root: P, paths: I) -> eyre::Result<TempTag>
     where
         I: Iterator<Item = P>,
         P: Into<PathBuf>,
     {
+        let root = root.into();
+
         let path_and_hash_tasks = paths.map(|x| async {
-            let path = x.into().canonicalize()?;
-            let pathstr = path.to_string_lossy().to_string();
+            let path = x.into();
+
             tracing::trace!(?path, "Tagging path");
             let tag = self
                 .store
                 .add_path_with_opts(AddPathOptions {
-                    path,
+                    path: path.canonicalize()?,
                     mode: ImportMode::TryReference,
                     format: BlobFormat::Raw,
                 })
                 .await?;
+
+            let path = dunce::canonicalize(path)?;
+            let path = path.strip_prefix(&root)?;
+            let pathstr = path.to_string_lossy().to_string();
 
             eyre::Ok((pathstr, tag.hash))
         });
@@ -512,13 +556,15 @@ impl Handler {
 
                     tracing::debug!(?path, "building collection");
 
-                    let files = walkdir::WalkDir::new(path.clone())
+                    let root = dunce::canonicalize(path)?;
+
+                    let files = walkdir::WalkDir::new(path)
                         .into_iter()
                         .filter_map(Result::ok)
                         .filter(|x| !x.file_type().is_dir())
-                        .map(|x| x.into_path());
+                        .map(walkdir::DirEntry::into_path);
 
-                    let root_tag = node.create_collection(files).await?;
+                    let root_tag = node.create_collection(root, files).await?;
 
                     tracing::info!(
                         hash = %root_tag.hash(),
