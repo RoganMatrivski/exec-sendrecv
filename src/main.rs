@@ -15,7 +15,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use iroh::{
     endpoint::presets,
     protocol::{ProtocolHandler, Router},
-    Endpoint, EndpointAddr,
+    Endpoint, EndpointAddr, RelayUrl,
 };
 use iroh_blobs::{
     api::{
@@ -76,6 +76,7 @@ struct Payload<B: Display, F: Display> {
 
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
+    tracing::trace!("Checking if {path:?} is executable in Unix...");
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .map(|m| m.permissions().mode() & 0o111 != 0)
@@ -84,6 +85,7 @@ fn is_executable(path: &Path) -> bool {
 
 #[cfg(not(unix))]
 fn is_executable(path: &Path) -> bool {
+    tracing::trace!("Checking if {path:?} is executable in Windows...");
     path.extension()
         .map(|e| e == "exe" || e == "bat" || e == "cmd")
         .unwrap_or(false)
@@ -98,6 +100,16 @@ fn find_executable_or_first(dir: &Path) -> Option<PathBuf> {
         .collect();
 
     // Try to find first executable
+    if let Some(exec) = files.iter().find(|p| {
+        is_executable(p)
+            && !matches!(
+                p.extension().and_then(|e| e.to_str()),
+                Some("exe" | "bat" | "cmd" | "dll")
+            )
+    }) {
+        return Some(exec.clone());
+    }
+    // Fallback: any executable (including .exe)
     if let Some(exec) = files.iter().find(|p| is_executable(p)) {
         return Some(exec.clone());
     }
