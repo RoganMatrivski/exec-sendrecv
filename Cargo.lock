@@ -1134,10 +1134,12 @@ dependencies = [
  "data-encoding",
  "digit_group",
  "dotenvy",
+ "eyre",
  "futures-util",
  "indicatif",
  "iroh",
  "iroh-blobs",
+ "libc",
  "machineid-rs",
  "mimalloc",
  "redis",
@@ -1150,6 +1152,7 @@ dependencies = [
  "tracing",
  "tracing-error",
  "tracing-subscriber",
+ "walkdir",
 ]
 
 [[package]]
