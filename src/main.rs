@@ -726,7 +726,10 @@ pub fn get_device_code() -> String {
 }
 
 fn get_endpoint_builder() -> color_eyre::eyre::Result<iroh::endpoint::Builder> {
-    let endpoint_builder = Endpoint::builder(presets::N0)
+    let endpoint_builder = Endpoint::builder(presets::Minimal)
+        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::try_from_iter(
+            vec!["https://aps1-1.relay.n0.iroh-canary.iroh.link./"],
+        )?))
         .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
         .address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns())
         .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
