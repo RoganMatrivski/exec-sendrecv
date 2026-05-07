@@ -1,7 +1,7 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     fmt::{self, Display},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -18,14 +18,26 @@ use iroh::{
     Endpoint, EndpointAddr,
 };
 use iroh_blobs::{
-    api::{blobs::AddProgressItem, downloader::DownloadProgressItem},
-    store::mem::MemStore,
+    api::{
+        blobs::{
+            AddPathOptions, AddProgressItem, ExportMode, ExportOptions, ExportProgressItem,
+            ImportMode,
+        },
+        downloader::DownloadProgressItem,
+        remote::{GetProgressItem, GetStreamPair},
+        Store, TempTag,
+    },
+    format::collection::Collection,
+    store::{fs::FsStore, mem::MemStore},
     ticket::BlobTicket,
-    BlobsProtocol,
+    BlobFormat, BlobsProtocol, Hash, HashAndFormat,
 };
 use sha2::Digest;
+use tracing::Instrument;
+use walkdir::WalkDir;
 
 mod broker;
+mod collection_example;
 mod init;
 
 // Avoid musl's default allocator due to lackluster performance
@@ -39,7 +51,7 @@ const BROKER_ALPN: &[u8] = b"i/dont/like/this/rock/robert/broker";
 
 #[derive(Clone)]
 struct TicketReceiver {
-    store: MemStore,
+    store: Store,
     endpoint: Endpoint,
     filedir: Option<PathBuf>,
     on_recv: Option<Arc<dyn Fn(PathBuf) + Send + Sync>>,
@@ -67,92 +79,193 @@ impl ProtocolHandler for TicketReceiver {
         &self,
         conn: iroh::endpoint::Connection,
     ) -> Result<(), iroh::protocol::AcceptError> {
-        let store = self.store.clone();
-        let endpoint = self.endpoint.clone();
+        let conn_id = format!("{:?}", conn.remote_id());
 
-        let result: Result<(), iroh::protocol::AcceptError> = async {
-            let (mut send_ack, mut recv) = conn.accept_bi().await?;
+        let span = tracing::info_span!(
+            "ticket_receiver.accept",
+            %conn_id,
+        );
 
-            let mut buf = Vec::new();
-            tokio::io::AsyncReadExt::read_to_end(&mut recv, &mut buf).await?;
+        async move {
+            tracing::info!("accepting incoming ticket transfer");
 
-            let payload = String::from_utf8(buf).expect("Failed to parse payload");
-            let payload: Payload<BlobTicket, std::borrow::Cow<'_, str>> =
-                serde_json::from_str(&payload).expect("Failed parsing payload");
-            let ticket: BlobTicket = payload.blob;
+            let store = self.store.clone();
+            let endpoint = self.endpoint.clone();
 
-            let dest = if let Some(d) = &self.filedir {
-                tempfile::NamedTempFile::new_in(d)
-            } else {
-                tempfile::NamedTempFile::new()
-            }
-            .expect("Failed to create temporary file")
-            .into_temp_path()
-            .keep()
-            .expect("Failed to get temporary path");
+            let result: Result<(), iroh::protocol::AcceptError> = async {
+                tracing::debug!("waiting for bidi stream");
 
-            let dl = store.downloader(&endpoint);
-            let mut progress = dl
-                .download(ticket.hash(), Some(ticket.addr().id))
-                .stream()
-                .await
-                .expect("Failed to start downloading");
+                let (mut send_ack, mut recv) = conn.accept_bi().await?;
 
-            let mut last_print = std::time::Instant::now();
-            let print_every = Duration::from_secs(1);
+                tracing::debug!("bidi stream accepted");
 
-            while let Some(item) = progress.next().await {
-                match item {
-                    DownloadProgressItem::Progress(n) => {
-                        if last_print.elapsed() >= print_every {
-                            let mb = n as f64 / 1_000_000.0;
-                            tracing::info!("Downloading... {mb:.1} MB");
-                            last_print = std::time::Instant::now();
-                        }
+                let mut buf = Vec::new();
+
+                tracing::trace!("reading incoming payload");
+
+                tokio::io::AsyncReadExt::read_to_end(&mut recv, &mut buf).await?;
+
+                tracing::debug!(payload_size = buf.len(), "received payload bytes");
+
+                let payload = String::from_utf8(buf).expect("Failed to parse payload");
+
+                tracing::trace!(
+                    payload_len = payload.len(),
+                    payload = %payload,
+                    "decoded payload string"
+                );
+
+                let ticket: BlobTicket = payload.parse().expect("Failed parsing payload to Ticket");
+
+                tracing::info!(
+                    hash = %ticket.hash(),
+                    addr = ?ticket.addr(),
+                    format = ?ticket.format(),
+                    "parsed blob ticket"
+                );
+
+                let req = HashAndFormat::hash_seq(ticket.hash());
+
+                tracing::info!(
+                    source = ?ticket.addr(),
+                    "starting collection download"
+                );
+
+                store
+                    .downloader(&endpoint)
+                    .download(req, Some(ticket.addr().id))
+                    .await?;
+
+                tracing::info!("collection download completed");
+
+                use iroh_blobs::api::downloader::{DownloadOptions, SplitStrategy};
+                use iroh_blobs::format::collection::Collection;
+
+                tracing::debug!(
+                    hash = %ticket.hash(),
+                    "loading collection metadata"
+                );
+
+                let collection = Collection::load(ticket.hash(), &store).await?;
+
+                tracing::info!(files = collection.len(), "loaded collection");
+
+                // Choose an output directory.
+                let dest_root = if let Some(d) = &self.filedir {
+                    tracing::debug!(
+                        dir = %d.display(),
+                        "using configured file output directory"
+                    );
+
+                    ensure_dir(d).expect("Failed to create destination directory");
+
+                    tempfile::tempdir_in(d)
+                        .expect("Failed to create temp output dir")
+                        .into_path()
+                } else {
+                    tracing::debug!("using system temporary directory");
+
+                    tempfile::tempdir()
+                        .expect("Failed to create temp output dir")
+                        .into_path()
+                };
+
+                tracing::info!(
+                    path = %dest_root.display(),
+                    "created destination root"
+                );
+
+                for (name, hash) in collection.iter() {
+                    let export_span = tracing::debug_span!(
+                        "export_blob",
+                        file = %name,
+                        hash = %hash,
+                    );
+
+                    async {
+                        let target = dest_root.join(name);
+
+                        tracing::debug!(
+                            target = %target.display(),
+                            "exporting blob"
+                        );
+
+                        store
+                            .export_with_opts(ExportOptions {
+                                hash: hash.clone(),
+                                target: target.clone(),
+                                mode: ExportMode::TryReference,
+                            })
+                            .await
+                            .expect("Failed to export file from Store");
+
+                        tracing::info!(
+                            target = %target.display(),
+                            "export completed"
+                        );
                     }
-                    DownloadProgressItem::TryProvider { .. } => {
-                        tracing::info!("Connecting to provider...");
-                    }
-                    DownloadProgressItem::PartComplete { .. } => {
-                        tracing::info!("Download complete, writing to disk...");
-                    }
-                    DownloadProgressItem::DownloadError => {
-                        return Err(std::io::Error::other("download error").into());
-                    }
-                    DownloadProgressItem::Error(err) => {
-                        return Err(err.into());
-                    }
-                    _ => {}
+                    .instrument(export_span)
+                    .await;
                 }
-            }
 
-            store
-                .blobs()
-                .export(ticket.hash(), &dest)
-                .await
-                .expect("Failed copying from memory to local");
+                // For single-file transfers, keep the old behavior and hand back the file path.
+                // For folders, hand back the output directory.
+                let recv_path = if collection.len() == 1 {
+                    let (name, _) = collection.iter().next().unwrap();
+                    dest_root.join(name)
+                } else {
+                    dest_root.clone()
+                };
 
-            if let Some(f) = self.on_recv.clone() {
-                f(dest.to_path_buf());
-            }
+                tracing::info!(
+                    recv_path = %recv_path.display(),
+                    "resolved receive path"
+                );
 
-            tokio::io::AsyncWriteExt::write_all(&mut send_ack, b"done").await?;
-            send_ack.finish()?;
+                if let Some(f) = self.on_recv.clone() {
+                    tracing::debug!("invoking receive callback");
 
-            Ok(())
-        }
-        .await;
+                    f(recv_path);
 
-        match result {
-            Ok(()) => {
-                tracing::info!("received");
+                    tracing::debug!("receive callback completed");
+                } else {
+                    tracing::trace!("no receive callback registered");
+                }
+                tracing::info!("receiver finished restore; sending ack");
+
+                tokio::io::AsyncWriteExt::write_all(&mut send_ack, b"done").await?;
+
+                tracing::debug!("receiver finishing ack stream");
+                send_ack.finish()?;
+
+                tracing::debug!("waiting for ack delivery");
+                send_ack
+                    .stopped()
+                    .await
+                    .expect("Failed to wait for ACK request");
+
+                tracing::info!("receiver ack delivered");
+
+                tracing::info!("transfer completed successfully");
+
                 Ok(())
             }
-            Err(err) => {
-                tracing::error!("failed");
-                Err(err)
+            .await;
+
+            match result {
+                Ok(()) => {
+                    tracing::info!("ticket receiver completed");
+                    Ok(())
+                }
+                Err(err) => {
+                    tracing::error!(?err, "ticket receiver failed");
+
+                    Err(err)
+                }
             }
         }
+        .instrument(span)
+        .await
     }
 }
 
@@ -172,6 +285,197 @@ pub fn ensure_dir(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+/// Turn a path into a safe `a/b/c.txt` style collection key.
+fn relative_name(path: impl AsRef<Path>) -> color_eyre::eyre::Result<String> {
+    let mut parts = Vec::new();
+
+    for c in path.as_ref().components() {
+        match c {
+            Component::Normal(x) => {
+                parts.push(x.to_str().context("non-utf8 path component")?.to_owned())
+            }
+            _ => return Err(eyre::eyre!("invalid path component")),
+        }
+    }
+
+    Ok(parts.join("/"))
+}
+
+/// Import a file or a folder into the blob store and build a `Collection`.
+///
+/// Each file becomes one blob, and the collection stores:
+///     logical name -> blob hash
+async fn import_collection(
+    store: &MemStore,
+    input: &Path,
+) -> color_eyre::eyre::Result<(Collection, Vec<TempTag>)> {
+    let input = input.canonicalize()?;
+    let base = input.parent().context("input has no parent")?;
+
+    let mut collection = Collection::default();
+    let mut keepalive = Vec::new();
+
+    for entry in WalkDir::new(&input) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let file_path = entry.into_path();
+        let rel = file_path.strip_prefix(base)?;
+        let name = relative_name(rel)?;
+
+        let mut stream = store
+            .blobs()
+            .add_path_with_opts(AddPathOptions {
+                path: file_path,
+                mode: ImportMode::TryReference,
+                format: BlobFormat::Raw,
+            })
+            .stream()
+            .await;
+
+        let mut done = None;
+
+        while let Some(item) = stream.next().await {
+            match item {
+                AddProgressItem::Done(tt) => {
+                    done = Some(tt);
+                    break;
+                }
+                AddProgressItem::Error(err) => return Err(err.into()),
+                _ => {}
+            }
+        }
+
+        let tt = done.context("add_path ended without Done")?;
+        collection.push(name, tt.hash());
+        keepalive.push(tt);
+    }
+
+    Ok((collection, keepalive))
+}
+
+/// Export a collection into a destination directory.
+async fn export_collection(
+    store: &MemStore,
+    collection: &Collection,
+    out_dir: &Path,
+) -> color_eyre::eyre::Result<()> {
+    for (name, hash) in collection.iter() {
+        let target = out_dir.join(name);
+
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let mut stream = store
+            .blobs()
+            .export_with_opts(ExportOptions {
+                hash: *hash,
+                target,
+                mode: ExportMode::Copy,
+            })
+            .stream()
+            .await;
+
+        while let Some(item) = stream.next().await {
+            match item {
+                ExportProgressItem::Done => break,
+                ExportProgressItem::Error(err) => return Err(err.into()),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(())
+}
+
+struct Node {
+    store: Store,
+    router: Router,
+}
+
+impl Node {
+    pub async fn new() -> eyre::Result<Self> {
+        let endpoint = get_endpoint_builder()?.bind().await?;
+        let tempdir = tempfile::tempdir()?.keep();
+        let store = FsStore::load(tempdir).await?;
+
+        let blobs_protocol = BlobsProtocol::new(&store, None);
+        let router = Router::builder(endpoint)
+            .accept(iroh_blobs::ALPN, blobs_protocol)
+            .spawn();
+
+        Ok(Self {
+            store: store.into(),
+            router,
+        })
+    }
+
+    pub fn endpoint(&self) -> &Endpoint {
+        self.router.endpoint()
+    }
+
+    // get address of this node. Has the side effect of waiting for the node
+    // to be online & ready to accept connections
+    async fn addr(&self) -> eyre::Result<EndpointAddr> {
+        self.router.endpoint().online().await;
+        let addr = self.router.endpoint().addr();
+        Ok(addr)
+    }
+
+    async fn list_hashes(&self) -> eyre::Result<Vec<Hash>> {
+        self.store
+            .blobs()
+            .list()
+            .hashes()
+            .await
+            .context("Failed to list hashes")
+    }
+
+    async fn create_collection<I, P>(&self, paths: I) -> eyre::Result<TempTag>
+    where
+        I: Iterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        let path_and_hash_tasks = paths.map(|x| async {
+            let path = x.into().canonicalize()?;
+            let pathstr = path.to_string_lossy().to_string();
+            tracing::trace!(?path, "Tagging path");
+            let tag = self
+                .store
+                .add_path_with_opts(AddPathOptions {
+                    path,
+                    mode: ImportMode::TryReference,
+                    format: BlobFormat::Raw,
+                })
+                .await?;
+
+            eyre::Ok((pathstr, tag.hash))
+        });
+
+        let path_and_hash = futures::future::try_join_all(path_and_hash_tasks).await?;
+
+        let collection = Collection::from_iter(path_and_hash);
+
+        let temptag = collection.store(&self.store).await?;
+        self.store.tags().create(temptag.hash_and_format()).await?;
+
+        Ok(temptag)
+    }
+
+    pub async fn get_collection(&self, hash: Hash, source_addr: EndpointAddr) -> eyre::Result<()> {
+        let req = HashAndFormat::hash_seq(hash);
+        self.store
+            .downloader(self.router.endpoint())
+            .download(req, Some(source_addr.id))
+            .await?;
+
+        Ok(())
+    }
+}
+
 pub enum Handler {
     Send(String, String, PathBuf),
     Receive(
@@ -186,125 +490,133 @@ impl Handler {
     pub async fn run(&self) -> color_eyre::eyre::Result<()> {
         match self {
             Handler::Send(broker_id, recv_code, path) => {
-                let endpoint = get_endpoint_builder()?.bind().await?;
-                let store = MemStore::new();
-
-                // Derive broker's PublicKey from the shared broker_id
-                let broker_key = broker::broker_public_key(broker_id);
-
-                let recv_code = recv_code.split_whitespace().collect::<Vec<_>>().join("");
-
-                // Ask broker for the receiver's PublicKey
-                tracing::info!("Looking up receiver via broker...");
-                let receiver_key = broker::broker_lookup(&endpoint, broker_key, &recv_code).await?;
-                tracing::info!(?receiver_key, "Found receiver");
-
-                let blobs = BlobsProtocol::new(&store, None);
-
-                tracing::debug!(?path, "Hashing file");
-
-                let add = store.blobs().add_path(&path);
-                let mut stream = add.stream().await;
-
-                let pb = ProgressBar::new(0);
-                pb.set_style(
-                    ProgressStyle::with_template("{msg} [{bar:40.cyan/blue}] {pos}/{len}")
-                        .expect("invalid progress style"),
+                let span = tracing::info_span!(
+                    "handler.send",
+                    broker_id = %broker_id,
+                    path = ?path,
                 );
-                pb.set_message("adding file");
 
-                let mut tag = None;
+                async move {
+                    tracing::info!("starting send handler");
 
-                while let Some(item) = stream.next().await {
-                    match item {
-                        AddProgressItem::Size(size) => {
-                            pb.set_length(size);
+                    let node = Node::new().await?;
+                    tracing::debug!("node created");
+
+                    let broker_key = broker::broker_public_key(broker_id);
+                    let recv_code = recv_code.split_whitespace().collect::<Vec<_>>().join("");
+
+                    tracing::info!("looking up receiver via broker");
+                    let receiver_key =
+                        broker::broker_lookup(node.endpoint(), broker_key, &recv_code).await?;
+                    tracing::info!(?receiver_key, "found receiver");
+
+                    tracing::debug!(?path, "building collection");
+
+                    let files = walkdir::WalkDir::new(path.clone())
+                        .into_iter()
+                        .filter_map(Result::ok)
+                        .filter(|x| !x.file_type().is_dir())
+                        .map(|x| x.into_path());
+
+                    let root_tag = node.create_collection(files).await?;
+
+                    tracing::info!(
+                        hash = %root_tag.hash(),
+                        format = ?root_tag.format(),
+                        "collection built"
+                    );
+
+                    // Send collection root hash to receiver.
+                    let ticket =
+                        BlobTicket::new(node.addr().await?, root_tag.hash(), root_tag.format());
+
+                    tracing::debug!(
+                        ticket_addr = ?ticket.addr(),
+                        ticket_hash = %ticket.hash(),
+                        ticket_format = ?ticket.format(),
+                        "built blob ticket"
+                    );
+
+                    let addr = EndpointAddr {
+                        id: receiver_key,
+                        addrs: BTreeSet::new(),
+                    };
+
+                    tracing::info!(?addr, "connecting to receiver");
+
+                    let conn = node
+                        .endpoint()
+                        .connect(addr, ALPN)
+                        .await
+                        .wrap_err("Failed to connect to iroh endpoint")?;
+
+                    tracing::debug!("connection established");
+
+                    let (mut send, mut recv_ack) = conn.open_bi().await?;
+                    tracing::debug!("opened bidi stream to receiver");
+
+                    tracing::info!("sending ticket payload");
+                    tokio::io::AsyncWriteExt::write_all(&mut send, ticket.to_string().as_bytes())
+                        .await?;
+                    send.finish()?;
+                    tracing::debug!("ticket sent and stream finished");
+
+                    tracing::info!("sending ticket sent; waiting for receiver ack");
+                    let mut ack = [0u8; 4];
+
+                    let ack_result = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        tokio::io::AsyncReadExt::read_exact(&mut recv_ack, &mut ack),
+                    )
+                    .await;
+
+                    match ack_result {
+                        Ok(Ok(n)) => {
+                            tracing::info!(
+                                ack_len = n,
+                                ack = ?String::from_utf8_lossy(&ack),
+                                "received receiver ack"
+                            );
                         }
-                        AddProgressItem::CopyProgress(size)
-                        | AddProgressItem::OutboardProgress(size) => {
-                            pb.set_position(size);
-                        }
-                        AddProgressItem::CopyDone => {
-                            pb.set_message("hashing");
-                        }
-                        AddProgressItem::Done(tt) => {
-                            tag = Some(tt);
-                            break;
-                        }
-                        AddProgressItem::Error(err) => {
-                            pb.abandon_with_message("failed");
+                        Ok(Err(err)) => {
+                            tracing::error!(?err, "failed while reading receiver ack");
                             return Err(err.into());
                         }
+                        Err(_) => {
+                            tracing::error!("timed out waiting for receiver ack");
+                            return Err(eyre::eyre!("receiver did not finish in time"));
+                        }
                     }
+
+                    tracing::info!("shutting down router");
+                    node.router.shutdown().await?;
+                    tracing::debug!("router shutdown complete");
+
+                    tracing::debug!("closing connection");
+                    conn.close(0u32.into(), b"bye");
+
+                    tracing::info!("send handler done");
+
+                    Ok::<_, eyre::Error>(())
                 }
-
-                let tt = tag.expect("add_path ended without Done");
-                let tag = tt.hash_and_format();
-                pb.finish_with_message("done");
-
-                let ticket = BlobTicket::new(endpoint.addr(), tag.hash, tag.format);
-                let filename = path
-                    .file_name()
-                    .wrap_err("Failed getting filename from path")?
-                    .to_string_lossy();
-
-                let payload = Payload {
-                    blob: ticket,
-                    filename,
-                };
-
-                let addr = EndpointAddr {
-                    id: receiver_key,       // your PublicKey
-                    addrs: BTreeSet::new(), // empty set -> discovery will be used
-                };
-
-                let conn = endpoint
-                    .connect(addr, ALPN)
-                    .await
-                    .wrap_err("Failed to connect to iroh endpoint")?;
-
-                let (mut send, mut recv_ack) = conn.open_bi().await?;
-
-                tokio::io::AsyncWriteExt::write_all(
-                    &mut send,
-                    serde_json::to_string(&payload)?.as_bytes(),
-                )
+                .instrument(span)
                 .await?;
-                send.finish()?;
-
-                let router = Router::builder(endpoint)
-                    .accept(iroh_blobs::ALPN, blobs)
-                    .spawn();
-
-                // wait for receiver to signal done
-                let mut ack = Vec::new();
-                tokio::io::AsyncReadExt::read_to_end(&mut recv_ack, &mut ack).await?;
-
-                conn.close(0u32.into(), b"bye");
-                drop(conn);
-
-                tracing::info!("Receiver done, shutting down.");
-                tokio::time::timeout(std::time::Duration::from_secs(3), router.shutdown())
-                    .await
-                    .ok();
             }
             Handler::Receive(broker_id, on_recv, filedir) => {
-                let endpoint = get_endpoint_builder()?.bind().await?;
-                let store = MemStore::new();
+                let node = Node::new().await?;
+                let endpoint = node.endpoint().clone();
+                let store = node.store;
 
                 let id = endpoint.id();
                 let fingerprint = get_device_code();
                 tracing::info!(?id, "App ID: {fingerprint}");
                 let key = endpoint.id();
 
-                // Derive broker's PublicKey and register ourselves
                 let broker_key = broker::broker_public_key(&broker_id);
                 broker::broker_register(&endpoint, broker_key, &fingerprint, key).await?;
 
-                // Split digits to three like rustdesk or anydesk
                 let fingerprint = {
                     use digit_group::FormatGroup;
-
                     fingerprint
                         .parse::<usize>()?
                         .format_custom('.', ' ', 3, 3, false)
@@ -314,7 +626,7 @@ impl Handler {
                 tracing::info!("Registered with broker. Waiting for sender...");
 
                 let handler = TicketReceiver {
-                    store,
+                    store: store.into(),
                     filedir: filedir.clone(),
                     endpoint: endpoint.clone(),
                     on_recv: on_recv.clone(),

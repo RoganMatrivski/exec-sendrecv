@@ -195,7 +195,7 @@ pub async fn broker_lookup(
         BrokerResponse::NotFound => {
             tracing::info!(code, "Peer not found");
             color_eyre::eyre::bail!("No peer registered with that code")
-        },
+        }
         _ => color_eyre::eyre::bail!("Unexpected broker response during lookup"),
     }
 }

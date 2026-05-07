@@ -1128,6 +1128,7 @@ dependencies = [
 name = "exec-sendrecv"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
  "color-eyre",
  "dashmap",
@@ -1135,6 +1136,7 @@ dependencies = [
  "digit_group",
  "dotenvy",
  "eyre",
+ "futures",
  "futures-util",
  "indicatif",
  "iroh",
