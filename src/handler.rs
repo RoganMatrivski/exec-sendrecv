@@ -35,8 +35,9 @@ impl Handler {
                 let fingerprint = get_device_code();
                 tracing::info!(id = ?endpoint.id(), "App ID: {fingerprint}");
 
-                let broker_key = broker::broker_public_key(broker_id);
-                broker::broker_register(&endpoint, broker_key, &fingerprint, endpoint.id())
+                let broker_addr = broker::resolve_broker_addr(broker_id);
+                let own_ticket = iroh_tickets::endpoint::EndpointTicket::new(endpoint.addr());
+                broker::broker_register(&endpoint, broker_addr, &fingerprint, own_ticket)
                     .await?;
 
                 let fingerprint = {
@@ -67,7 +68,9 @@ impl Handler {
                     .bind()
                     .await?;
 
+                let ticket = iroh_tickets::endpoint::EndpointTicket::new(endpoint.addr());
                 tracing::info!("Broker pubkey: {}", endpoint.id());
+                println!("Broker Ticket: {ticket}");
 
                 let handler = broker::BrokerHandler::default();
                 let router = Router::builder(endpoint)

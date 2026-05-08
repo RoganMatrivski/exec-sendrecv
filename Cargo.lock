@@ -1147,6 +1147,7 @@ dependencies = [
  "indicatif",
  "iroh",
  "iroh-blobs",
+ "iroh-tickets",
  "libc",
  "machineid-rs",
  "mimalloc",

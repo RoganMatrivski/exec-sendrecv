@@ -1,7 +1,6 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::path::PathBuf;
 
 use color_eyre::eyre::{self, Context};
-use iroh::EndpointAddr;
 use iroh_blobs::ticket::BlobTicket;
 use tracing::Instrument;
 
@@ -20,12 +19,12 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
         let node = Node::new().await?;
         tracing::debug!("node created");
 
-        let broker_key = broker::broker_public_key(broker_id);
+        let broker_addr = broker::resolve_broker_addr(broker_id);
         let recv_code = recv_code.split_whitespace().collect::<Vec<_>>().join("");
 
         tracing::info!("looking up receiver via broker");
-        let receiver_key = broker::broker_lookup(node.endpoint(), broker_key, &recv_code).await?;
-        tracing::info!(?receiver_key, "found receiver");
+        let peer_ticket = broker::broker_lookup(node.endpoint(), broker_addr, &recv_code).await?;
+        tracing::info!(?peer_ticket, "found receiver");
 
         tracing::debug!(?path, "building collection");
         let root = dunce::canonicalize(path)?;
@@ -50,15 +49,10 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
             "built blob ticket"
         );
 
-        let addr = EndpointAddr {
-            id: receiver_key,
-            addrs: BTreeSet::new(),
-        };
-
-        tracing::info!(?addr, "connecting to receiver");
+        tracing::info!(?peer_ticket, "connecting to receiver");
         let conn = node
             .endpoint()
-            .connect(addr, ALPN)
+            .connect(peer_ticket, ALPN)
             .await
             .wrap_err("Failed to connect to iroh endpoint")?;
         tracing::debug!("connection established");

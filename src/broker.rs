@@ -2,37 +2,37 @@ use std::sync::Arc;
 
 use color_eyre::eyre::Context;
 use dashmap::DashMap;
-use iroh::{protocol::ProtocolHandler, Endpoint, PublicKey, SecretKey};
+use iroh::{
+    endpoint::Connection, protocol::ProtocolHandler, Endpoint, EndpointAddr, PublicKey, SecretKey,
+};
+use iroh_tickets::endpoint::EndpointTicket;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum BrokerRequest {
-    // Receiver sends this: "I am reachable at this PublicKey, my short code is X"
-    Register { code: String, key: String },
-    // Sender sends this: "Give me the PublicKey for short code X"
+    // Receiver sends this: "I am reachable at this ticket, my short code is X"
+    Register { code: String, ticket: String },
+    // Sender sends this: "Give me the ticket for short code X"
     Lookup { code: String },
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type")]
 pub enum BrokerResponse {
-    Found { key: String },
+    Found { ticket: String },
     NotFound,
     Ok,
 }
 
 #[derive(Debug, Default)]
 pub struct BrokerHandler {
-    // Shared across all connections: short_code -> PublicKey string
+    // Shared across all connections: short_code -> ticket string
     registry: Arc<DashMap<String, String>>,
 }
 
 impl ProtocolHandler for BrokerHandler {
     #[tracing::instrument(skip(self, conn), err)]
-    async fn accept(
-        &self,
-        conn: iroh::endpoint::Connection,
-    ) -> Result<(), iroh::protocol::AcceptError> {
+    async fn accept(&self, conn: Connection) -> Result<(), iroh::protocol::AcceptError> {
         let registry = self.registry.clone();
 
         // Bidi stream: peer writes request, broker writes response
@@ -50,17 +50,19 @@ impl ProtocolHandler for BrokerHandler {
         })?;
 
         let response = match &request {
-            BrokerRequest::Register { code, key } => {
-                tracing::info!(code, key, "Registering peer");
-                registry.insert(code.clone(), key.clone());
+            BrokerRequest::Register { code, ticket } => {
+                tracing::info!(code, ticket, "Registering peer");
+                registry.insert(code.clone(), ticket.clone());
                 BrokerResponse::Ok
             }
             BrokerRequest::Lookup { code } => {
                 tracing::info!(code, "Looking up peer");
                 match registry.get(code) {
-                    Some(key) => {
-                        tracing::debug!(code, key = %key.value(), "Found peer");
-                        BrokerResponse::Found { key: key.clone() }
+                    Some(ticket) => {
+                        tracing::debug!(code, ticket = %ticket.value(), "Found peer");
+                        BrokerResponse::Found {
+                            ticket: ticket.clone(),
+                        }
                     }
                     None => {
                         tracing::debug!(code, "Peer not found");
@@ -106,16 +108,27 @@ pub fn broker_public_key(client_id: &str) -> PublicKey {
     derive_secret_key(client_id).public()
 }
 
+pub fn resolve_broker_addr(id: &str) -> EndpointAddr {
+    use std::str::FromStr;
+    if let Ok(ticket) = EndpointTicket::from_str(id) {
+        tracing::info!("Broker ticket get!");
+        ticket.into()
+    } else {
+        tracing::info!("Can't parse broker ticket. Assuming it's a public key...");
+        EndpointAddr::from(broker_public_key(id))
+    }
+}
+
 #[tracing::instrument(skip(endpoint), err)]
 pub async fn broker_register(
     endpoint: &Endpoint,
-    broker_key: PublicKey,
+    broker_addr: EndpointAddr,
     code: &str,
-    own_key: PublicKey,
+    own_ticket: EndpointTicket,
 ) -> color_eyre::eyre::Result<()> {
     tracing::debug!("Connecting to broker");
     let conn = endpoint
-        .connect(broker_key, crate::BROKER_ALPN)
+        .connect(broker_addr, crate::BROKER_ALPN)
         .await
         .wrap_err("Failed to connect to broker")?;
     tracing::debug!("Connected to broker");
@@ -125,7 +138,7 @@ pub async fn broker_register(
 
     let request = BrokerRequest::Register {
         code: code.to_string(),
-        key: own_key.to_string(),
+        ticket: own_ticket.to_string(),
     };
 
     let bytes = serde_json::to_vec(&request)?;
@@ -156,12 +169,12 @@ pub async fn broker_register(
 #[tracing::instrument(skip(endpoint), err)]
 pub async fn broker_lookup(
     endpoint: &Endpoint,
-    broker_key: PublicKey,
+    broker_addr: EndpointAddr,
     code: &str,
-) -> color_eyre::eyre::Result<PublicKey> {
+) -> color_eyre::eyre::Result<EndpointTicket> {
     tracing::debug!("Connecting to broker");
     let conn = endpoint
-        .connect(broker_key, crate::BROKER_ALPN)
+        .connect(broker_addr, crate::BROKER_ALPN)
         .await
         .context("Failed to connect to broker")?;
     tracing::debug!("Connected to broker");
@@ -187,10 +200,12 @@ pub async fn broker_lookup(
     tracing::debug!("Received response");
 
     match response {
-        BrokerResponse::Found { key } => {
-            let pk: PublicKey = key.parse().context("Broker returned invalid PublicKey")?;
+        BrokerResponse::Found { ticket } => {
+            use std::str::FromStr;
+            let ticket =
+                EndpointTicket::from_str(&ticket).context("Broker returned invalid Ticket")?;
             tracing::info!(code, "Found peer");
-            Ok(pk)
+            Ok(ticket)
         }
         BrokerResponse::NotFound => {
             tracing::info!(code, "Peer not found");
