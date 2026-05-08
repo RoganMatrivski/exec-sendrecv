@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf};
 
 use color_eyre::eyre::{self, Context};
 use iroh::EndpointAddr;
