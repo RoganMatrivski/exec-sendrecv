@@ -57,6 +57,9 @@ async fn main() -> Result<(), Report> {
         }
     });
 
+    let tx = std::sync::Arc::new(tx);
+    let tx_clone = tx.clone();
+
     match args.command {
         init::AppSubcommand::Send { key, file } => handler::Handler::Send(broker_id, key, file),
         init::AppSubcommand::Receive { filedir } => handler::Handler::Receive(
@@ -72,6 +75,9 @@ async fn main() -> Result<(), Report> {
     }
     .run()
     .await?;
+
+    // Close the connection so that exec_runner exits
+    drop(tx_clone);
 
     exec_runner.await?;
 

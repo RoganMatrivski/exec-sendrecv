@@ -109,7 +109,7 @@ impl Node {
             .await?;
 
         while let Some(item) = progress.next().await {
-            tracing::info!(?item);
+            tracing::trace!(?item);
 
             match item {
                 DownloadProgressItem::Progress(n) => on_progress(n),

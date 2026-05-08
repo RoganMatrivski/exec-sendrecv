@@ -24,8 +24,7 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
         let recv_code = recv_code.split_whitespace().collect::<Vec<_>>().join("");
 
         tracing::info!("looking up receiver via broker");
-        let receiver_key =
-            broker::broker_lookup(node.endpoint(), broker_key, &recv_code).await?;
+        let receiver_key = broker::broker_lookup(node.endpoint(), broker_key, &recv_code).await?;
         tracing::info!(?receiver_key, "found receiver");
 
         tracing::debug!(?path, "building collection");
@@ -74,36 +73,16 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
 
         tracing::info!("waiting for receiver ack");
         let mut ack = [0u8; 4];
-        let ack_result = tokio::time::timeout(
-            Duration::from_mins(5),
-            tokio::io::AsyncReadExt::read_exact(&mut recv_ack, &mut ack),
-        )
-        .await;
-
-        match ack_result {
-            Ok(Ok(n)) => {
-                tracing::info!(
-                    ack_len = n,
-                    ack = ?String::from_utf8_lossy(&ack),
-                    "received ack"
-                );
-            }
-            Ok(Err(err)) => {
-                tracing::error!(?err, "failed while reading ack");
-                return Err(err.into());
-            }
-            Err(_) => {
-                tracing::error!("timed out waiting for ack");
-                return Err(eyre::eyre!("receiver did not finish in time"));
-            }
-        }
+        tokio::io::AsyncReadExt::read_exact(&mut recv_ack, &mut ack).await?;
 
         tracing::info!("shutting down router");
         node.router.shutdown().await?;
         conn.close(0u32.into(), b"bye");
         tracing::info!("send handler done");
 
-        Ok(())
+        // TODO: Find better way to do this
+        // when tx dropped it should've be gone
+        std::process::exit(0);
     }
     .instrument(span)
     .await
