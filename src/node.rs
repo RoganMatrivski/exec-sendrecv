@@ -22,7 +22,18 @@ pub struct Node {
 impl Node {
     pub async fn new() -> eyre::Result<Self> {
         let endpoint = get_endpoint_builder()?.bind().await?;
-        let tempdir = tempfile::tempdir()?.keep();
+        // let tempdir = tempfile::tempdir()?.keep();
+        let tempdir =
+            directories::ProjectDirs::from("com.github", "roganmatrivski", "exec-sendrecv")
+                .map(|p| p.cache_dir().to_path_buf())
+                .or_else(|| directories::BaseDirs::new().map(|b| b.cache_dir().to_path_buf()))
+                .unwrap_or_else(std::env::temp_dir);
+
+        let tempdir = tempdir.join("fs-store");
+
+        std::fs::create_dir_all(&tempdir)
+            .wrap_err_with(|| format!("Failed to create directory: {}", tempdir.display()))?;
+
         let store = FsStore::load(tempdir).await?;
 
         let blobs_protocol = BlobsProtocol::new(&store, None);

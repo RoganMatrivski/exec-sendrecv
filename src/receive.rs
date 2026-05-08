@@ -108,7 +108,7 @@ impl ProtocolHandler for TicketReceiver {
                             .export_with_opts(ExportOptions {
                                 hash: hash.clone(),
                                 target: target.clone(),
-                                mode: ExportMode::TryReference,
+                                mode: ExportMode::Copy,
                             })
                             .await
                             .expect("Failed to export file from Store");

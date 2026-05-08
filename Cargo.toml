@@ -39,6 +39,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 walkdir = "2.5.0"
 dunce = "1.0.5"
 machineid-rs = { git = "https://github.com/RoganMatrivski/machineid-rs", version = "1.2.4" }
+directories = "6.0.0"
 
 [target.'cfg(not(windows))'.dependencies]
 libc = "*"
