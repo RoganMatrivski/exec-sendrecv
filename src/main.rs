@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     fmt::{self},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 
@@ -23,11 +23,17 @@ use iroh_blobs::{
     BlobFormat, BlobsProtocol, Hash, HashAndFormat,
 };
 use sha2::Digest;
+use std::io::Stderr;
 use tracing::Instrument;
 use walkdir::WalkDir;
 
+use crate::init::ProgressBarLogWriter;
+
 mod broker;
 mod init;
+
+pub static MPB: LazyLock<ProgressBarLogWriter<Stderr>> =
+    LazyLock::new(|| ProgressBarLogWriter::default());
 
 // Avoid musl's default allocator due to lackluster performance
 // https://nickb.dev/blog/default-musl-allocator-considered-harmful-to-performance
@@ -497,8 +503,12 @@ impl Handler {
                     tracing::info!("sending ticket sent; waiting for receiver ack");
                     let mut ack = [0u8; 4];
 
+                    // TODO: Either increase, or do something else
+                    // TODO: Add progress bar?
+                    // TODO: Make FsStore fixed
+
                     let ack_result = tokio::time::timeout(
-                        Duration::from_secs(30),
+                        Duration::from_mins(5),
                         tokio::io::AsyncReadExt::read_exact(&mut recv_ack, &mut ack),
                     )
                     .await;

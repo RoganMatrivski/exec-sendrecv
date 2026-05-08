@@ -64,7 +64,7 @@ pub fn initialize() -> Result<Args, Report> {
         .add_directive(format!("{}={}", pkg_name!(), crate_level).parse().unwrap());
 
     let fmt_layer = fmt::layer()
-        .with_writer(std::io::stderr)
+        .with_writer(|| crate::MPB.mpb_writer())
         .with_level(true)
         .with_thread_ids(args.verbose > 1)
         .with_thread_names(args.verbose > 2)
@@ -77,4 +77,50 @@ pub fn initialize() -> Result<Args, Report> {
         .init();
 
     Ok(args)
+}
+
+use indicatif::MultiProgress;
+use std::{io::Write, ops::Deref};
+pub struct ProgressBarLogWriter<W: Write> {
+    writer: W,
+    mpb: MultiProgress,
+}
+
+impl<W: Write> ProgressBarLogWriter<W> {
+    pub fn new(writer: W, mpb: MultiProgress) -> Self {
+        Self { writer, mpb }
+    }
+
+    fn mpb_writer(&self) -> Box<dyn std::io::Write> {
+        Box::new(ProgressBarLogWriter::new(
+            std::io::stderr(),
+            self.mpb.clone(),
+        ))
+    }
+}
+
+impl<W: Write> Write for ProgressBarLogWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.mpb.suspend(|| self.writer.write(buf))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.mpb.suspend(|| self.writer.flush())
+    }
+}
+
+impl<W: Write> Deref for ProgressBarLogWriter<W> {
+    type Target = MultiProgress;
+
+    fn deref(&self) -> &Self::Target {
+        &self.mpb
+    }
+}
+
+impl Default for ProgressBarLogWriter<std::io::Stderr> {
+    fn default() -> Self {
+        Self {
+            writer: std::io::stderr(),
+            mpb: indicatif::MultiProgress::new(),
+        }
+    }
 }
