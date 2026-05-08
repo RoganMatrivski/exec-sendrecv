@@ -4,6 +4,8 @@ version = "0.1.0"
 authors = ["Robin Mauritz <robinmauritzrm@gmail.com>"]
 edition = "2021"
 repository = "https://github.com/RoganMatrivski/exec-sendrecv"
+license = "MIT OR Apache-2.0"
+description = "i'unno"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [target.'cfg(target_env = "musl")'.dependencies]
