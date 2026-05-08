@@ -52,8 +52,14 @@ impl ProtocolHandler for TicketReceiver {
                 tokio::io::AsyncReadExt::read_to_end(&mut recv, &mut buf).await?;
                 tracing::debug!(payload_size = buf.len(), "received payload bytes");
 
-                let payload = String::from_utf8(buf).expect("Failed to parse payload");
-                let ticket: BlobTicket = payload.parse().expect("Failed parsing payload to Ticket");
+                let payload = String::from_utf8(buf).map_err(|e| {
+                    tracing::error!(error = %e, "failed to parse payload as UTF-8");
+                    iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+                })?;
+                let ticket: BlobTicket = payload.parse().map_err(|e| {
+                    tracing::error!(error = ?e, "failed to parse payload as BlobTicket");
+                    iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid ticket"))
+                })?;
 
                 tracing::info!(
                     hash = %ticket.hash(),
@@ -67,7 +73,10 @@ impl ProtocolHandler for TicketReceiver {
                     indicatif::ProgressStyle::with_template(
                         "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})",
                     )
-                    .expect("invalid style"),
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "failed to create progress bar style");
+                        iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e))
+                    })?,
                 );
                 pb.set_message("downloading");
 
@@ -76,21 +85,36 @@ impl ProtocolHandler for TicketReceiver {
                         pb.set_position(bytes);
                     })
                     .await
-                    .expect("Failed to download collection");
+                    .map_err(|e| {
+                        tracing::error!(error = ?e, "failed to download collection");
+                        iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                    })?;
 
                 pb.finish_with_message("download complete");
 
-                let collection = Collection::load(ticket.hash(), &store).await?;
+                let collection = Collection::load(ticket.hash(), &store).await.map_err(|e| {
+                    tracing::error!(error = ?e, "failed to load collection from store");
+                    iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                })?;
                 tracing::info!(files = collection.len(), "loaded collection");
 
                 let dest_root = if let Some(d) = &self.filedir {
-                    ensure_dir(d).expect("Failed to create destination directory");
+                    ensure_dir(d).map_err(|e| {
+                        tracing::error!(error = ?e, path = %d.display(), "failed to ensure destination directory");
+                        iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                    })?;
                     tempfile::tempdir_in(d)
-                        .expect("Failed to create temp output dir")
+                        .map_err(|e| {
+                            tracing::error!(error = %e, "failed to create temp output dir");
+                            iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e))
+                        })?
                         .keep()
                 } else {
                     tempfile::tempdir()
-                        .expect("Failed to create temp output dir")
+                        .map_err(|e| {
+                            tracing::error!(error = %e, "failed to create temp output dir");
+                            iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e))
+                        })?
                         .keep()
                 };
 
@@ -100,7 +124,7 @@ impl ProtocolHandler for TicketReceiver {
                     let export_span =
                         tracing::debug_span!("export_blob", file = %name, hash = %hash);
 
-                    async {
+                    let res = async {
                         let target = dest_root.join(name);
                         tracing::debug!(target = %target.display(), "exporting blob");
 
@@ -111,12 +135,20 @@ impl ProtocolHandler for TicketReceiver {
                                 mode: ExportMode::Copy,
                             })
                             .await
-                            .expect("Failed to export file from Store");
+                            .map_err(|e| {
+                                tracing::error!(error = ?e, "failed to export file from Store");
+                                iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                            })?;
 
                         tracing::info!(target = %target.display(), "export completed");
+                        Ok::<(), iroh::protocol::AcceptError>(())
                     }
                     .instrument(export_span)
                     .await;
+                    
+                    if let Err(e) = res {
+                        return Err(e);
+                    }
                 }
 
                 let base_path = if collection.len() == 1 {
