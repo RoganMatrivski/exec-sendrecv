@@ -37,9 +37,6 @@ walkdir = "2.5.0"
 dunce = "1.0.5"
 machineid-rs = { git = "https://github.com/RoganMatrivski/machineid-rs", version = "1.2.4" }
 
-# This will be removed after collection_example gone
-anyhow = "1.0.102"
-
 [target.'cfg(not(windows))'.dependencies]
 libc = "*"
 
