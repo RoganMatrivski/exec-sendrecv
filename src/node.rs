@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::{self, Context};
+use iroh::protocol::Router;
 use iroh::{endpoint::presets, Endpoint, EndpointAddr};
 use iroh_blobs::{
     api::{
@@ -11,7 +12,6 @@ use iroh_blobs::{
     store::fs::FsStore,
     BlobFormat, BlobsProtocol, Hash, HashAndFormat,
 };
-use iroh::protocol::Router;
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -91,12 +91,41 @@ impl Node {
         Ok(temptag)
     }
 
-    pub async fn get_collection(&self, hash: Hash, source_addr: EndpointAddr) -> eyre::Result<()> {
+    pub async fn get_collection(
+        &self,
+        hash: Hash,
+        source_addr: EndpointAddr,
+        on_progress: impl Fn(u64),
+    ) -> eyre::Result<()> {
+        use futures_util::StreamExt;
+        use iroh_blobs::api::downloader::DownloadProgressItem;
+
         let req = HashAndFormat::hash_seq(hash);
-        self.store
+        let mut stream = self
+            .store
             .downloader(self.router.endpoint())
-            .download(req, Some(source_addr.id))
+            .download(req, Some(source_addr.id))    
+            .stream()
             .await?;
+
+        while let Some(item) = stream.next().await {
+            match item {
+                DownloadProgressItem::Progress(n) => {
+                    on_progress(n);
+                }
+                DownloadProgressItem::ProviderFailed { .. } => {
+                    tracing::warn!("provider failed, trying next");
+                }
+                DownloadProgressItem::DownloadError => {
+                    eyre::bail!("download error");
+                }
+                DownloadProgressItem::Error(err) => {
+                    return Err(err.into());
+                }
+                _ => {}
+            }
+        }
+
         Ok(())
     }
 }

@@ -62,12 +62,23 @@ impl ProtocolHandler for TicketReceiver {
                     "parsed blob ticket"
                 );
 
+                let pb = crate::MPB.add(indicatif::ProgressBar::new(0));
+                pb.set_style(
+                    indicatif::ProgressStyle::with_template(
+                        "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})",
+                    )
+                    .expect("invalid style"),
+                );
+                pb.set_message("downloading");
+
                 self.node
-                    .get_collection(ticket.hash(), ticket.addr().clone())
+                    .get_collection(ticket.hash(), ticket.addr().clone(), |bytes| {
+                        pb.set_position(bytes);
+                    })
                     .await
                     .expect("Failed to download collection");
 
-                tracing::info!("collection download completed");
+                pb.finish_with_message("download complete");
 
                 let collection = Collection::load(ticket.hash(), &store).await?;
                 tracing::info!(files = collection.len(), "loaded collection");
