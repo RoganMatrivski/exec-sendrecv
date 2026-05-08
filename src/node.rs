@@ -95,34 +95,35 @@ impl Node {
         &self,
         hash: Hash,
         source_addr: EndpointAddr,
-        on_progress: impl Fn(u64),
+        mut on_progress: impl FnMut(u64),
     ) -> eyre::Result<()> {
         use futures_util::StreamExt;
         use iroh_blobs::api::downloader::DownloadProgressItem;
 
         let req = HashAndFormat::hash_seq(hash);
-        let mut stream = self
-            .store
-            .downloader(self.router.endpoint())
-            .download(req, Some(source_addr.id))    
+
+        let downloader = self.store.downloader(self.router.endpoint());
+        let mut progress = downloader
+            .download(req, Some(source_addr.id))
             .stream()
             .await?;
 
-        while let Some(item) = stream.next().await {
+        while let Some(item) = progress.next().await {
+            tracing::info!(?item);
+
             match item {
-                DownloadProgressItem::Progress(n) => {
-                    on_progress(n);
-                }
+                DownloadProgressItem::Progress(n) => on_progress(n),
                 DownloadProgressItem::ProviderFailed { .. } => {
                     tracing::warn!("provider failed, trying next");
                 }
+                DownloadProgressItem::TryProvider { .. } => {}
+                DownloadProgressItem::PartComplete { .. } => {}
                 DownloadProgressItem::DownloadError => {
                     eyre::bail!("download error");
                 }
                 DownloadProgressItem::Error(err) => {
                     return Err(err.into());
                 }
-                _ => {}
             }
         }
 
