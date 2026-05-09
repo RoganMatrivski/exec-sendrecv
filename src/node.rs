@@ -22,7 +22,6 @@ pub struct Node {
 impl Node {
     pub async fn new() -> eyre::Result<Self> {
         let endpoint = get_endpoint_builder()?.bind().await?;
-        // let tempdir = tempfile::tempdir()?.keep();
         let tempdir =
             directories::ProjectDirs::from("com.github", "roganmatrivski", "exec-sendrecv")
                 .map(|p| p.cache_dir().to_path_buf())

@@ -103,12 +103,7 @@ impl ProtocolHandler for TicketReceiver {
                         tracing::error!(error = ?e, path = %d.display(), "failed to ensure destination directory");
                         iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
                     })?;
-                    tempfile::tempdir_in(d)
-                        .map_err(|e| {
-                            tracing::error!(error = %e, "failed to create temp output dir");
-                            iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e))
-                        })?
-                        .keep()
+                    d.canonicalize()?
                 } else {
                     tempfile::tempdir()
                         .map_err(|e| {
@@ -145,7 +140,7 @@ impl ProtocolHandler for TicketReceiver {
                     }
                     .instrument(export_span)
                     .await;
-                    
+
                     if let Err(e) = res {
                         return Err(e);
                     }
