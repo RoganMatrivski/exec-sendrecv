@@ -43,7 +43,11 @@ async fn main() -> Result<(), Report> {
             if let Some(mut child) = child_handle.take() {
                 kill_tree(&mut child);
             }
-            match Command::new(&path).spawn() {
+
+            let workdir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            tracing::trace!(?workdir, "Spawning process");
+
+            match Command::new(&path).current_dir(workdir).spawn() {
                 Ok(child) => {
                     println!("Spawned: {:?} (pid {})", path, child.id());
                     child_handle = Some(child);
