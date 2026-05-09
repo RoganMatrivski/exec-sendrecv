@@ -1,3 +1,4 @@
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
 use color_eyre::eyre::{self, Context};
@@ -12,6 +13,12 @@ use iroh_blobs::{
     store::fs::FsStore,
     BlobFormat, BlobsProtocol, Hash, HashAndFormat,
 };
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InfoPayload {
+    pub blob_ticket: iroh_blobs::ticket::BlobTicket,
+    pub total_bytes: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -66,7 +73,7 @@ impl Node {
             .context("Failed to list hashes")
     }
 
-    pub async fn create_collection<I, P>(&self, root: P, paths: I) -> eyre::Result<TempTag>
+    pub async fn create_collection<I, P>(&self, root: P, paths: I) -> eyre::Result<(TempTag, u64)>
     where
         I: Iterator<Item = P>,
         P: Into<PathBuf>,
@@ -76,6 +83,8 @@ impl Node {
         let path_and_hash_tasks = paths.map(|x| async {
             let path = x.into();
             tracing::trace!(?path, "Tagging path");
+
+            let size = path.metadata()?.size();
 
             let tag = self
                 .store
@@ -90,15 +99,22 @@ impl Node {
             let path = path.strip_prefix(&root)?;
             let pathstr = path.to_string_lossy().to_string();
 
-            eyre::Ok((pathstr, tag.hash))
+            eyre::Ok(((pathstr, tag.hash), size))
         });
 
-        let path_and_hash = futures::future::try_join_all(path_and_hash_tasks).await?;
+        let (path_and_hash, file_sizes): (Vec<(String, Hash)>, Vec<u64>) =
+            futures::future::try_join_all(path_and_hash_tasks)
+                .await?
+                .into_iter()
+                .unzip();
+
         let collection = Collection::from_iter(path_and_hash);
         let temptag = collection.store(&self.store).await?;
         self.store.tags().create(temptag.hash_and_format()).await?;
 
-        Ok(temptag)
+        let total_size: u64 = file_sizes.into_iter().sum();
+
+        Ok((temptag, total_size))
     }
 
     pub async fn get_collection(

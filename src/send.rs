@@ -34,7 +34,7 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
             .filter(|x| !x.file_type().is_dir())
             .map(walkdir::DirEntry::into_path);
 
-        let root_tag = node.create_collection(root, files).await?;
+        let (root_tag, total_size) = node.create_collection(root, files).await?;
         tracing::info!(
             hash = %root_tag.hash(),
             format = ?root_tag.format(),
@@ -49,6 +49,13 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
             "built blob ticket"
         );
 
+        let payload = crate::node::InfoPayload {
+            blob_ticket: ticket,
+            total_bytes: total_size,
+        };
+
+        let payload_bin: Vec<u8> = postcard::to_stdvec(&payload)?;
+
         tracing::info!(?peer_ticket, "connecting to receiver");
         let conn = node
             .endpoint()
@@ -61,7 +68,7 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
         tracing::debug!("opened bidi stream to receiver");
 
         tracing::info!("sending ticket payload");
-        tokio::io::AsyncWriteExt::write_all(&mut send, ticket.to_string().as_bytes()).await?;
+        tokio::io::AsyncWriteExt::write_all(&mut send, &payload_bin).await?;
         send.finish()?;
         tracing::debug!("ticket sent and stream finished");
 

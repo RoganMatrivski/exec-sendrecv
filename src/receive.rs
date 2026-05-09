@@ -52,14 +52,12 @@ impl ProtocolHandler for TicketReceiver {
                 tokio::io::AsyncReadExt::read_to_end(&mut recv, &mut buf).await?;
                 tracing::debug!(payload_size = buf.len(), "received payload bytes");
 
-                let payload = String::from_utf8(buf).map_err(|e| {
+                let payload: crate::node::InfoPayload = postcard::from_bytes(&buf).map_err(|e| {
                     tracing::error!(error = %e, "failed to parse payload as UTF-8");
                     iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
                 })?;
-                let ticket: BlobTicket = payload.parse().map_err(|e| {
-                    tracing::error!(error = ?e, "failed to parse payload as BlobTicket");
-                    iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid ticket"))
-                })?;
+
+                let ticket = payload.blob_ticket;
 
                 tracing::info!(
                     hash = %ticket.hash(),
@@ -68,7 +66,7 @@ impl ProtocolHandler for TicketReceiver {
                     "parsed blob ticket"
                 );
 
-                let pb = crate::MPB.add(indicatif::ProgressBar::new(0));
+                let pb = crate::MPB.add(indicatif::ProgressBar::new(payload.total_bytes));
                 pb.set_style(
                     indicatif::ProgressStyle::with_template(
                         "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})",

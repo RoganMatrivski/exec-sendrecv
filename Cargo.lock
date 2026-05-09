@@ -1247,6 +1247,7 @@ dependencies = [
  "libc",
  "machineid-rs",
  "mimalloc",
+ "postcard",
  "redis",
  "serde",
  "serde_json",
