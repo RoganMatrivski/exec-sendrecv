@@ -4,7 +4,6 @@ use iroh::protocol::ProtocolHandler;
 use iroh_blobs::{
     api::blobs::{ExportMode, ExportOptions},
     format::collection::Collection,
-    ticket::BlobTicket,
 };
 use tracing::Instrument;
 
@@ -41,6 +40,7 @@ impl ProtocolHandler for TicketReceiver {
 
         async move {
             tracing::info!("accepting incoming ticket transfer");
+
             let store = self.node.store.clone();
 
             let result: Result<(), iroh::protocol::AcceptError> = async {
