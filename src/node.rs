@@ -1,4 +1,3 @@
-use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
 use color_eyre::eyre::{self, Context};
@@ -84,7 +83,7 @@ impl Node {
             let path = x.into();
             tracing::trace!(?path, "Tagging path");
 
-            let size = path.metadata()?.size();
+            let size = path.metadata()?.len();
 
             let tag = self
                 .store
