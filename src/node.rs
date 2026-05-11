@@ -89,7 +89,7 @@ impl Node {
                 .store
                 .add_path_with_opts(AddPathOptions {
                     path: path.canonicalize()?,
-                    mode: ImportMode::TryReference,
+                    mode: ImportMode::Copy,
                     format: BlobFormat::Raw,
                 })
                 .await?;

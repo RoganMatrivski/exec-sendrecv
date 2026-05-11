@@ -130,19 +130,31 @@ impl ProtocolHandler for TicketReceiver {
                         let target = dest_root.join(name);
                         tracing::debug!(target = %target.display(), "exporting blob");
 
-                        wait_lock(&target).await.expect("Failed to wait for file lock");
 
-                        store
-                            .export_with_opts(ExportOptions {
-                                hash: hash.clone(),
-                                target: target.clone(),
-                                mode: ExportMode::Copy,
-                            })
+                        let export_fn = || async {
+                            store
+                                .export_with_opts(ExportOptions {
+                                    hash: hash.clone(),
+                                    target: target.clone(),
+                                    mode: ExportMode::Copy,
+                                })
+                                .await
+                                .map_err(|e| {
+                                    tracing::error!(error = ?e, "failed to export file from Store");
+                                    iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                })
+                        };
+
+
+                        use backon::ExponentialBuilder;
+                        use backon::Retryable;
+
+                        export_fn
+                            .retry(ExponentialBuilder::default())
+                            .sleep(backon::FuturesTimerSleeper::default())
                             .await
-                            .map_err(|e| {
-                                tracing::error!(error = ?e, "failed to export file from Store");
-                                iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                            })?;
+                            .expect("Failed to export blobs");
+
 
                         tracing::info!(target = %target.display(), "export completed");
                         Ok::<(), iroh::protocol::AcceptError>(())
@@ -203,28 +215,4 @@ impl ProtocolHandler for TicketReceiver {
         .instrument(span)
         .await
     }
-}
-
-pub async fn wait_lock(p: impl AsRef<std::path::Path>) -> eyre::Result<()> {
-    let retry = 5;
-    let write_fn = || async {
-        let file = std::fs::OpenOptions::new().write(true).open(p.as_ref())?;
-        if let Err(_) = file.try_lock() {
-            eyre::bail!("");
-        }
-
-        file.unlock()?;
-
-        eyre::Ok(())
-    };
-
-    for _ in 0..retry {
-        if write_fn().await.is_ok() {
-            break;
-        };
-
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    }
-
-    Ok(())
 }
