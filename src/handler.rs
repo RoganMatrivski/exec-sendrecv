@@ -15,6 +15,7 @@ pub enum Handler {
     Send(String, String, PathBuf),
     Receive(
         String,
+        Option<Arc<dyn Fn() + Send + Sync>>,
         Option<Arc<dyn Fn(PathBuf) + Send + Sync>>,
         Option<PathBuf>,
     ),
@@ -28,7 +29,7 @@ impl Handler {
                 crate::send::run(broker_id, recv_code, path).await?;
             }
 
-            Handler::Receive(broker_id, on_recv, filedir) => {
+            Handler::Receive(broker_id, on_export, on_recv, filedir) => {
                 let node = Node::new().await?;
                 let endpoint = node.endpoint().clone();
 
@@ -37,8 +38,7 @@ impl Handler {
 
                 let broker_addr = broker::resolve_broker_addr(broker_id);
                 let own_ticket = iroh_tickets::endpoint::EndpointTicket::new(endpoint.addr());
-                broker::broker_register(&endpoint, broker_addr, &fingerprint, own_ticket)
-                    .await?;
+                broker::broker_register(&endpoint, broker_addr, &fingerprint, own_ticket).await?;
 
                 let fingerprint = {
                     use digit_group::FormatGroup;
@@ -53,6 +53,7 @@ impl Handler {
                 let handler = TicketReceiver {
                     node,
                     filedir: filedir.clone(),
+                    on_export: on_export.clone(),
                     on_recv: on_recv.clone(),
                 };
 

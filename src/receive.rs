@@ -16,6 +16,7 @@ use crate::{
 pub struct TicketReceiver {
     pub node: Node,
     pub filedir: Option<PathBuf>,
+    pub on_export: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_recv: Option<Arc<dyn Fn(PathBuf) + Send + Sync>>,
 }
 
@@ -25,6 +26,7 @@ impl fmt::Debug for TicketReceiver {
             .field("store", &self.node.store)
             .field("endpoint", &self.node.endpoint())
             .field("filedir", &self.filedir)
+            .field("on_recv", &self.on_export.as_ref().map(|_| "<fn>"))
             .field("on_recv", &self.on_recv.as_ref().map(|_| "<fn>"))
             .finish()
     }
@@ -113,6 +115,13 @@ impl ProtocolHandler for TicketReceiver {
 
                 tracing::info!(path = %dest_root.display(), "created destination root");
 
+                if let Some(f) = self.on_export.clone() {
+                    tracing::debug!("invoking export callback");
+                    let c_start = tokio::time::Instant::now();
+                    f();
+                    tracing::debug!(c_time = c_start.elapsed().as_millis(), "export callback completed");
+                }
+
                 for (name, hash) in collection.iter() {
                     let export_span =
                         tracing::debug_span!("export_blob", file = %name, hash = %hash);
@@ -120,6 +129,8 @@ impl ProtocolHandler for TicketReceiver {
                     let res = async {
                         let target = dest_root.join(name);
                         tracing::debug!(target = %target.display(), "exporting blob");
+
+                        wait_lock(&target).await.expect("Failed to wait for file lock");
 
                         store
                             .export_with_opts(ExportOptions {
@@ -192,4 +203,28 @@ impl ProtocolHandler for TicketReceiver {
         .instrument(span)
         .await
     }
+}
+
+pub async fn wait_lock(p: impl AsRef<std::path::Path>) -> eyre::Result<()> {
+    let retry = 5;
+    let write_fn = || async {
+        let file = std::fs::OpenOptions::new().write(true).open(p.as_ref())?;
+        if let Err(_) = file.try_lock() {
+            eyre::bail!("");
+        }
+
+        file.unlock()?;
+
+        eyre::Ok(())
+    };
+
+    for _ in 0..retry {
+        if write_fn().await.is_ok() {
+            break;
+        };
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    Ok(())
 }
