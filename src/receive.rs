@@ -12,7 +12,6 @@ use crate::{
     util::{ensure_dir, find_executable_or_first},
 };
 
-#[derive(Clone)]
 pub struct TicketReceiver {
     pub node: Node,
     pub filedir: Option<PathBuf>,

@@ -94,11 +94,13 @@ impl Node {
                 })
                 .await?;
 
-            let path = dunce::canonicalize(path)?;
-            let path = path.strip_prefix(&root)?;
-            let pathstr = path.to_string_lossy().to_string();
-
-            eyre::Ok(((pathstr, tag.hash), size))
+            eyre::Ok((
+                (
+                    strip_root(&path, &root)?.to_string_lossy().to_string(),
+                    tag.hash,
+                ),
+                size,
+            ))
         });
 
         let (path_and_hash, file_sizes): (Vec<(String, Hash)>, Vec<u64>) =
@@ -170,4 +172,8 @@ pub fn get_endpoint_builder() -> color_eyre::eyre::Result<iroh::endpoint::Builde
         .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
 
     Ok(endpoint_builder)
+}
+
+pub fn strip_root<P: AsRef<std::path::Path>>(p: P, r: P) -> eyre::Result<PathBuf> {
+    Ok(dunce::canonicalize(p)?.strip_prefix(r)?.to_path_buf())
 }
