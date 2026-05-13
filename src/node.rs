@@ -81,28 +81,32 @@ impl Node {
     {
         let root = root.into();
 
-        let path_and_hash_tasks = paths.map(|x| async {
-            let path = x.into();
-            tracing::trace!(?path, "Tagging path");
+        let path_and_hash_tasks = paths.map(|x| {
+            let root = root.clone();
+            let store = self.store.clone();
+            async move {
+                let rel_path = x.into();
+                let full_path = root.join(&rel_path);
+                tracing::trace!(?full_path, "Tagging path");
 
-            let size = path.metadata()?.len();
+                let size = full_path.metadata()?.len();
 
-            let tag = self
-                .store
-                .add_path_with_opts(AddPathOptions {
-                    path: path.canonicalize()?,
-                    mode: ImportMode::Copy,
-                    format: BlobFormat::Raw,
-                })
-                .await?;
+                let tag = store
+                    .add_path_with_opts(AddPathOptions {
+                        path: full_path.canonicalize()?,
+                        mode: ImportMode::Copy,
+                        format: BlobFormat::Raw,
+                    })
+                    .await?;
 
-            eyre::Ok((
-                (
-                    strip_root(&path, &root)?.to_string_lossy().to_string(),
-                    tag.hash,
-                ),
-                size,
-            ))
+                eyre::Ok((
+                    (
+                        rel_path.to_string_lossy().to_string(),
+                        tag.hash,
+                    ),
+                    size,
+                ))
+            }
         });
 
         let (path_and_hash, file_sizes): (Vec<(String, Hash)>, Vec<u64>) =
@@ -173,7 +177,13 @@ impl Node {
 }
 
 pub fn get_endpoint_builder() -> color_eyre::eyre::Result<iroh::endpoint::Builder> {
+    let transport_config = iroh::endpoint::QuicTransportConfig::builder()
+        .initial_mtu(1200)
+        .min_mtu(1200)
+        .build();
+
     let endpoint_builder = Endpoint::builder(presets::Minimal)
+        .transport_config(transport_config)
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::try_from_iter(
             vec![
                 "https://relay.rgmtrv.my.id/",
@@ -186,8 +196,4 @@ pub fn get_endpoint_builder() -> color_eyre::eyre::Result<iroh::endpoint::Builde
         .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
 
     Ok(endpoint_builder)
-}
-
-pub fn strip_root<P: AsRef<std::path::Path>>(p: P, r: P) -> eyre::Result<PathBuf> {
-    Ok(dunce::canonicalize(p)?.strip_prefix(r)?.to_path_buf())
 }

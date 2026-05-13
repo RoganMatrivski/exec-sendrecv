@@ -1,5 +1,6 @@
 use std::{fmt, path::PathBuf, sync::Arc};
 
+use futures::{SinkExt, StreamExt};
 use iroh::protocol::ProtocolHandler;
 use iroh_blobs::{
     api::blobs::{ExportMode, ExportOptions},
@@ -45,57 +46,10 @@ impl ProtocolHandler for TicketReceiver {
             let store = self.node.store.clone();
 
             let result: Result<(), iroh::protocol::AcceptError> = async {
+                tracing::info!(remote_id = ?conn.remote_id(), "Connection received from sender");
                 tracing::debug!("waiting for bidi stream");
-                let (mut send_ack, mut recv) = conn.accept_bi().await?;
-                tracing::debug!("bidi stream accepted");
-
-                let mut buf = Vec::new();
-                tokio::io::AsyncReadExt::read_to_end(&mut recv, &mut buf).await?;
-                tracing::debug!(payload_size = buf.len(), "received payload bytes");
-
-                let payload: crate::node::InfoPayload = postcard::from_bytes(&buf).map_err(|e| {
-                    tracing::error!(error = %e, "failed to parse payload as UTF-8");
-                    iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-                })?;
-
-                let ticket = payload.blob_ticket;
-
-                tracing::info!(
-                    hash = %ticket.hash(),
-                    addr = ?ticket.addr(),
-                    format = ?ticket.format(),
-                    "parsed blob ticket"
-                );
-
-                let pb = crate::MPB.add(indicatif::ProgressBar::new(payload.total_bytes));
-                pb.set_style(
-                    indicatif::ProgressStyle::with_template(
-                        "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})",
-                    )
-                    .map_err(|e| {
-                        tracing::error!(error = %e, "failed to create progress bar style");
-                        iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e))
-                    })?,
-                );
-                pb.set_message("downloading");
-
-                self.node
-                    .get_collection(ticket.hash(), ticket.addr().clone(), |bytes| {
-                        pb.set_position(bytes);
-                    })
-                    .await
-                    .map_err(|e| {
-                        tracing::error!(error = ?e, "failed to download collection");
-                        iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                    })?;
-
-                pb.finish_with_message("download complete");
-
-                let collection = Collection::load(ticket.hash(), &store).await.map_err(|e| {
-                    tracing::error!(error = ?e, "failed to load collection from store");
-                    iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                })?;
-                tracing::info!(files = collection.len(), "loaded collection");
+                let (send, recv) = conn.accept_bi().await?;
+                tracing::info!("Bidi-stream accepted from sender");
 
                 let dest_root = if let Some(d) = &self.filedir {
                     ensure_dir(d).map_err(|e| {
@@ -114,88 +68,140 @@ impl ProtocolHandler for TicketReceiver {
 
                 tracing::info!(path = %dest_root.display(), "created destination root");
 
-                if let Some(f) = self.on_export.clone() {
-                    tracing::debug!("invoking export callback");
-                    let c_start = tokio::time::Instant::now();
-                    f();
-                    tracing::debug!(c_time = c_start.elapsed().as_millis(), "export callback completed");
+                let (mut sink, mut stream) = crate::codec::peer_channel(send, recv);
+
+                // Wait for the sender to be ready (this triggers the accept_bi)
+                if let Some(msg) = stream.next().await {
+                    match msg? {
+                        crate::codec::PeerMessages::Ack => {
+                             tracing::info!("Sender is ready; capturing snapshot");
+                        }
+                        _ => {
+                            tracing::warn!("Received unexpected initial message from sender");
+                        }
+                    }
                 }
 
-                for (name, hash) in collection.iter() {
-                    let export_span =
-                        tracing::debug_span!("export_blob", file = %name, hash = %hash);
+                let snapshot = crate::snapshot::Snapshot::capture(&dest_root).expect("Failed to scan output dir for changes");
+                sink.send(crate::codec::PeerMessages::DirSnapshot(snapshot)).await?;
+                sink.flush().await?;
 
-                    let res = async {
-                        let target = dest_root.join(name);
-                        tracing::debug!(target = %target.display(), "exporting blob");
+                while let Some(msg) = stream.next().await {
+                    match msg? {
+                        crate::codec::PeerMessages::PayloadInfo { total_size: total_bytes, ticket } => {
+                            let pb = crate::MPB.add(indicatif::ProgressBar::new(total_bytes));
+                            pb.set_style(
+                                indicatif::ProgressStyle::with_template(
+                                    "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})",
+                                )
+                                .map_err(|e| {
+                                    tracing::error!(error = %e, "failed to create progress bar style");
+                                    iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e))
+                                })?,
+                            );
+                            pb.set_message("downloading");
 
-
-                        let export_fn = || async {
-                            store
-                                .export_with_opts(ExportOptions {
-                                    hash: hash.clone(),
-                                    target: target.clone(),
-                                    mode: ExportMode::Copy,
+                            self.node
+                                .get_collection(ticket.hash(), ticket.addr().clone(), |bytes| {
+                                    pb.set_position(bytes);
                                 })
                                 .await
                                 .map_err(|e| {
-                                    tracing::error!(error = ?e, "failed to export file from Store");
+                                    tracing::error!(error = ?e, "failed to download collection");
                                     iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-                                })
-                        };
+                                })?;
+
+                            pb.finish_with_message("download complete");
+
+                            let collection = Collection::load(ticket.hash(), &store).await.map_err(|e| {
+                                tracing::error!(error = ?e, "failed to load collection from store");
+                                iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                            })?;
+                            tracing::info!(files = collection.len(), "loaded collection");
+
+                            if let Some(f) = self.on_export.clone() {
+                                tracing::debug!("invoking export callback");
+                                let c_start = tokio::time::Instant::now();
+                                f();
+                                tracing::debug!(c_time = c_start.elapsed().as_millis(), "export callback completed");
+                            }
+
+                            for (name, hash) in collection.iter() {
+                                let export_span =
+                                    tracing::debug_span!("export_blob", file = %name, hash = %hash);
+
+                                let res = async {
+                                    let target = dest_root.join(name);
+                                    tracing::debug!(target = %target.display(), "exporting blob");
 
 
-                        use backon::ExponentialBuilder;
-                        use backon::Retryable;
+                                    let export_fn = || async {
+                                        store
+                                            .export_with_opts(ExportOptions {
+                                                hash: hash.clone(),
+                                                target: target.clone(),
+                                                mode: ExportMode::Copy,
+                                            })
+                                            .await
+                                            .map_err(|e| {
+                                                tracing::error!(error = ?e, "failed to export file from Store");
+                                                iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                            })
+                                    };
 
-                        export_fn
-                            .retry(ExponentialBuilder::default())
-                            .sleep(backon::FuturesTimerSleeper::default())
-                            .await
-                            .expect("Failed to export blobs");
+
+                                    use backon::ExponentialBuilder;
+                                    use backon::Retryable;
+
+                                    export_fn
+                                        .retry(ExponentialBuilder::default())
+                                        .sleep(backon::FuturesTimerSleeper::default())
+                                        .await
+                                        .expect("Failed to export blobs");
 
 
-                        tracing::info!(target = %target.display(), "export completed");
-                        Ok::<(), iroh::protocol::AcceptError>(())
-                    }
-                    .instrument(export_span)
-                    .await;
+                                    tracing::info!(target = %target.display(), "export completed");
+                                    Ok::<(), iroh::protocol::AcceptError>(())
+                                }
+                                .instrument(export_span)
+                                .await;
 
-                    if let Err(e) = res {
-                        return Err(e);
-                    }
-                }
+                                if let Err(e) = res {
+                                    sink.send(crate::codec::PeerMessages::ErrorMsg(e.to_string())).await?;
+                                    sink.flush().await?;
 
-                let base_path = if collection.len() == 1 {
-                    let (name, _) = collection.iter().next().unwrap();
-                    dest_root.join(name)
-                } else {
-                    dest_root.clone()
-                };
+                                    return Err(e);
+                                }
+                            }
 
-                let recv_path = if base_path.is_dir() {
-                    find_executable_or_first(&base_path).unwrap_or(base_path)
-                } else {
-                    base_path
-                };
+                            let base_path = dest_root.clone();
 
-                tracing::info!(recv_path = %recv_path.display(), "resolved receive path");
+                            let recv_path = if base_path.is_dir() {
+                                find_executable_or_first(&base_path).unwrap_or(base_path)
+                            } else {
+                                base_path
+                            };
 
-                if let Some(f) = self.on_recv.clone() {
-                    tracing::debug!("invoking receive callback");
-                    f(recv_path);
-                    tracing::debug!("receive callback completed");
-                }
+                            tracing::info!(recv_path = %recv_path.display(), "resolved receive path");
 
-                tracing::info!("receiver finished; sending ack");
-                tokio::io::AsyncWriteExt::write_all(&mut send_ack, b"done").await?;
-                send_ack.finish()?;
-                send_ack
-                    .stopped()
-                    .await
-                    .expect("Failed to wait for ACK delivery");
+                            if let Some(f) = self.on_recv.clone() {
+                                tracing::debug!("invoking receive callback");
+                                f(recv_path);
+                                tracing::debug!("receive callback completed");
+                            }
 
-                tracing::info!("transfer completed successfully");
+                            tracing::info!("receiver finished; sending ack");
+                            sink.send(crate::codec::PeerMessages::Ack).await?;
+                            sink.flush().await?;
+                            sink.close().await?;
+
+                            tracing::info!("transfer completed successfully");
+                            break;
+                            },
+                            _ => (),
+                            }
+                            };
+
                 Ok(())
             }
             .await;

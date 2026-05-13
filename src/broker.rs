@@ -172,7 +172,8 @@ pub async fn broker_register(
                 }
                 _ => color_eyre::eyre::bail!("Unexpected broker response during register"),
             }
-        }.await;
+        }
+        .await;
 
         match res {
             Ok(()) => return Ok(()),
@@ -183,7 +184,8 @@ pub async fn broker_register(
         }
     }
 
-    Err(last_error.unwrap_or_else(|| color_eyre::eyre::eyre!("Failed to register with broker after retries")))
+    Err(last_error
+        .unwrap_or_else(|| color_eyre::eyre::eyre!("Failed to register with broker after retries")))
 }
 
 // Sender calls this to ask the broker "who has code X?"
@@ -232,8 +234,8 @@ pub async fn broker_lookup(
             match response {
                 BrokerResponse::Found { ticket } => {
                     use std::str::FromStr;
-                    let ticket =
-                        EndpointTicket::from_str(&ticket).context("Broker returned invalid Ticket")?;
+                    let ticket = EndpointTicket::from_str(&ticket)
+                        .context("Broker returned invalid Ticket")?;
                     tracing::info!(code, "Found peer");
                     Ok(ticket)
                 }
@@ -243,7 +245,8 @@ pub async fn broker_lookup(
                 }
                 _ => color_eyre::eyre::bail!("Unexpected broker response during lookup"),
             }
-        }.await;
+        }
+        .await;
 
         match res {
             Ok(ticket) => return Ok(ticket),
@@ -258,5 +261,6 @@ pub async fn broker_lookup(
         }
     }
 
-    Err(last_error.unwrap_or_else(|| color_eyre::eyre::eyre!("Failed to lookup with broker after retries")))
+    Err(last_error
+        .unwrap_or_else(|| color_eyre::eyre::eyre!("Failed to lookup with broker after retries")))
 }

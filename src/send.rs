@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::{self, Context};
+use futures::{SinkExt, StreamExt};
 use iroh_blobs::ticket::BlobTicket;
 use tracing::Instrument;
 
@@ -26,55 +27,85 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
         let peer_ticket = broker::broker_lookup(node.endpoint(), broker_addr, &recv_code).await?;
         tracing::info!(?peer_ticket, "found receiver");
 
-        tracing::debug!(?path, "building collection");
-        let root = dunce::canonicalize(path)?;
-        let files = walkdir::WalkDir::new(path)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|x| !x.file_type().is_dir())
-            .map(walkdir::DirEntry::into_path);
-
-        let (root_tag, total_size) = node.create_collection(root, files).await?;
-        tracing::info!(
-            hash = %root_tag.hash(),
-            format = ?root_tag.format(),
-            "collection built"
-        );
-
-        let ticket = BlobTicket::new(node.addr().await?, root_tag.hash(), root_tag.format());
-        tracing::debug!(
-            ticket_addr = ?ticket.addr(),
-            ticket_hash = %ticket.hash(),
-            ticket_format = ?ticket.format(),
-            "built blob ticket"
-        );
-
-        let payload = crate::node::InfoPayload {
-            blob_ticket: ticket,
-            total_bytes: total_size,
-        };
-
-        let payload_bin: Vec<u8> = postcard::to_stdvec(&payload)?;
-
-        tracing::info!(?peer_ticket, "connecting to receiver");
         let conn = node
             .endpoint()
             .connect(peer_ticket, ALPN)
             .await
             .wrap_err("Failed to connect to iroh endpoint")?;
-        tracing::debug!("connection established");
+        tracing::info!("Connection established to receiver");
 
-        let (mut send, mut recv_ack) = conn.open_bi().await?;
-        tracing::debug!("opened bidi stream to receiver");
+        let (send, recv) = conn.open_bi().await?;
+        tracing::info!("Bidi-stream opened");
 
-        tracing::info!("sending ticket payload");
-        tokio::io::AsyncWriteExt::write_all(&mut send, &payload_bin).await?;
-        send.finish()?;
-        tracing::debug!("ticket sent and stream finished");
+        let (mut sink, mut stream) = crate::codec::peer_channel(send, recv);
 
-        tracing::info!("waiting for receiver ack");
-        let mut ack = [0u8; 4];
-        tokio::io::AsyncReadExt::read_exact(&mut recv_ack, &mut ack).await?;
+        // Send an initial message to trigger the receiver's accept_bi()
+        sink.send(crate::codec::PeerMessages::Ack).await?;
+        sink.flush().await?;
+
+        while let Some(msg) = stream.next().await {
+            match msg? {
+                crate::codec::PeerMessages::DirSnapshot(snapshot) => {
+                    let src = crate::snapshot::Snapshot::capture(path)?;
+
+                    let diffs = snapshot.diff(&src);
+                    let (deleted, others): (Vec<_>, Vec<_>) = diffs
+                        .iter()
+                        .partition(|x| matches!(x, crate::snapshot::Change::Deleted(_)));
+
+                    let changed_added =
+                        others.into_iter().map(|x| x.get_path()).collect::<Vec<_>>();
+                    let deleted = deleted
+                        .into_iter()
+                        .map(|x| x.get_path())
+                        .collect::<Vec<_>>();
+
+                    tracing::trace!(
+                        changed_added = ?changed_added,
+                        deleted = ?deleted,
+                        "Changes detected in directory"
+                    );
+
+                    let root = dunce::canonicalize(path)?;
+
+                    let (root_tag, total_size) = node
+                        .create_collection(root, changed_added.into_iter())
+                        .await?;
+                    tracing::info!(
+                        hash = %root_tag.hash(),
+                        format = ?root_tag.format(),
+                        "collection built"
+                    );
+
+                    let ticket =
+                        BlobTicket::new(node.addr().await?, root_tag.hash(), root_tag.format());
+                    tracing::debug!(
+                        ticket_addr = ?ticket.addr(),
+                        ticket_hash = %ticket.hash(),
+                        ticket_format = ?ticket.format(),
+                        "built blob ticket"
+                    );
+
+                    sink.send(crate::codec::PeerMessages::PayloadInfo { total_size, ticket })
+                        .await?;
+                }
+
+                crate::codec::PeerMessages::ErrorMsg(e) => {
+                    // TODO: Properly handle error from peer and stop execution gracefully.
+                    tracing::warn!(e);
+                }
+                crate::codec::PeerMessages::Progress { current, total } => {
+                    // TODO: Implement these
+                    ()
+                }
+
+                crate::codec::PeerMessages::Ack => {
+                    tracing::info!("Received final Ack from receiver");
+                    break;
+                }
+                _ => (),
+            }
+        }
 
         tracing::info!("shutting down router");
         node.router.shutdown().await?;
