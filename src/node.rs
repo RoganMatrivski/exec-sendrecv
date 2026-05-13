@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use color_eyre::eyre::{self, Context};
 use iroh::protocol::Router;
 use iroh::{endpoint::presets, Endpoint, EndpointAddr};
+use iroh_blobs::api::remote::GetProgressItem;
+use iroh_blobs::get::request::get_hash_seq_and_sizes;
 use iroh_blobs::{
     api::{
         blobs::{AddPathOptions, ImportMode},
@@ -125,31 +127,43 @@ impl Node {
         mut on_progress: impl FnMut(u64),
     ) -> eyre::Result<()> {
         use futures_util::StreamExt;
-        use iroh_blobs::api::downloader::DownloadProgressItem;
 
-        let req = HashAndFormat::hash_seq(hash);
+        let hashseq = HashAndFormat::hash_seq(hash);
 
-        let downloader = self.store.downloader(self.router.endpoint());
-        let mut progress = downloader
-            .download(req, Some(source_addr.id))
-            .stream()
+        let local = self.store.remote().local(hashseq).await?;
+
+        if local.is_complete() {
+            return Ok(());
+        }
+
+        let conn = self
+            .router
+            .endpoint()
+            .connect(source_addr, iroh_blobs::ALPN)
             .await?;
+
+        let (_hash_seq, sizes) =
+            get_hash_seq_and_sizes(&conn, &hash, 1024 * 1024 * 32, None).await?;
+
+        let total_size = sizes.iter().copied().sum::<u64>();
+        let payload_size = sizes.iter().skip(2).copied().sum::<u64>();
+        let total_files = (sizes.len().saturating_sub(1)) as u64;
+
+        tracing::info!(total_size, total_files, payload_size, "getting collection");
+
+        let get = self.store.remote().execute_get(conn, local.missing());
+        let mut progress = get.stream();
 
         while let Some(item) = progress.next().await {
             tracing::trace!(?item);
 
             match item {
-                DownloadProgressItem::Progress(n) => on_progress(n),
-                DownloadProgressItem::ProviderFailed { .. } => {
-                    tracing::warn!("provider failed, trying next");
-                }
-                DownloadProgressItem::TryProvider { .. } => {}
-                DownloadProgressItem::PartComplete { .. } => {}
-                DownloadProgressItem::DownloadError => {
-                    eyre::bail!("download error");
-                }
-                DownloadProgressItem::Error(err) => {
+                GetProgressItem::Progress(n) => on_progress(n),
+                GetProgressItem::Error(err) => {
                     return Err(err.into());
+                }
+                GetProgressItem::Done(stats) => {
+                    tracing::debug!(?stats, "Done downloading file")
                 }
             }
         }
