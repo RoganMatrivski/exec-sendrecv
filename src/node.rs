@@ -15,12 +15,6 @@ use iroh_blobs::{
     BlobFormat, BlobsProtocol, Hash, HashAndFormat,
 };
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct InfoPayload {
-    pub blob_ticket: iroh_blobs::ticket::BlobTicket,
-    pub total_bytes: u64,
-}
-
 #[derive(Debug, Clone)]
 pub struct Node {
     pub store: Store,

@@ -25,6 +25,7 @@ pub struct Snapshot {
     pub files: HashMap<PathBuf, FileEntry>,
 }
 
+#[allow(unused)]
 #[derive(Debug)]
 pub enum Change {
     Added(FileEntry),
@@ -73,19 +74,6 @@ impl Snapshot {
                 .as_secs(),
             files,
         })
-    }
-
-    /// Persist snapshot to a JSON file.
-    pub fn save(&self, path: impl AsRef<Path>) -> eyre::Result<()> {
-        let f = File::create(path)?;
-        serde_json::to_writer_pretty(f, self)?;
-        Ok(())
-    }
-
-    /// Load snapshot from a JSON file.
-    pub fn load(path: impl AsRef<Path>) -> eyre::Result<Self> {
-        let f = File::open(path)?;
-        Ok(serde_json::from_reader(BufReader::new(f))?)
     }
 
     pub fn diff(&self, after: &Snapshot) -> Vec<Change> {
