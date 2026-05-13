@@ -18,6 +18,7 @@ pub enum Handler {
         Option<Arc<dyn Fn() + Send + Sync>>,
         Option<Arc<dyn Fn(PathBuf) + Send + Sync>>,
         Option<PathBuf>,
+        bool,
     ),
     Broker(String),
 }
@@ -29,7 +30,7 @@ impl Handler {
                 crate::send::run(broker_id, recv_code, path).await?;
             }
 
-            Handler::Receive(broker_id, on_export, on_recv, filedir) => {
+            Handler::Receive(broker_id, on_export, on_recv, filedir, sync) => {
                 let node = Node::new().await?;
                 let endpoint = node.endpoint().clone();
 
@@ -55,6 +56,7 @@ impl Handler {
                     filedir: filedir.clone(),
                     on_export: on_export.clone(),
                     on_recv: on_recv.clone(),
+                    opt: crate::receive::TicketReceiverOptions { sync: sync.clone() },
                 };
 
                 let router = Router::builder(endpoint).accept(ALPN, handler).spawn();

@@ -5,10 +5,18 @@ use crate::snapshot::Snapshot;
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum PeerMessages {
     DirSnapshot(Snapshot),
-    PayloadInfo { total_size: u64, ticket: BlobTicket },
-    Progress { current: u64, total: u64 },
+    Progress {
+        current: u64,
+        total: u64,
+    },
     Ack,
     ErrorMsg(String),
+
+    PayloadInfo {
+        total_size: u64,
+        ticket: BlobTicket,
+        delete_targets: Vec<std::path::PathBuf>,
+    },
 }
 
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -32,14 +40,16 @@ where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
 {
-    // TODO: Use LengthDelimitedCodec::builder().max_frame_bytes(...) to set appropriate limits.
+    let codec = LengthDelimitedCodec::builder()
+        .max_frame_length(64 * 1024 * 1024) // 64MB
+        .new_codec();
+
     let sink = SymmetricallyFramed::new(
-        FramedWrite::new(send, LengthDelimitedCodec::new()),
+        FramedWrite::new(send, codec.clone()),
         SymmetricalBincode::<PeerMessages>::default(),
     );
-    // TODO: Consider manual framing or streaming if messages grow beyond memory-safe frame limits.
     let stream = SymmetricallyFramed::new(
-        FramedRead::new(recv, LengthDelimitedCodec::new()),
+        FramedRead::new(recv, codec),
         SymmetricalBincode::<PeerMessages>::default(),
     );
     (sink, stream)

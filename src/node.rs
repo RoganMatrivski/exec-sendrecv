@@ -99,13 +99,7 @@ impl Node {
                     })
                     .await?;
 
-                eyre::Ok((
-                    (
-                        rel_path.to_string_lossy().to_string(),
-                        tag.hash,
-                    ),
-                    size,
-                ))
+                eyre::Ok(((rel_path.to_string_lossy().to_string(), tag.hash), size))
             }
         });
 

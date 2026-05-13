@@ -86,8 +86,12 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
                         "built blob ticket"
                     );
 
-                    sink.send(crate::codec::PeerMessages::PayloadInfo { total_size, ticket })
-                        .await?;
+                    sink.send(crate::codec::PeerMessages::PayloadInfo {
+                        total_size,
+                        ticket,
+                        delete_targets: deleted,
+                    })
+                    .await?;
                 }
 
                 crate::codec::PeerMessages::ErrorMsg(e) => {

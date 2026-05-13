@@ -92,6 +92,7 @@ async fn main() -> Result<(), Report> {
                 }
             })),
             filedir,
+            false, // TODO: Add clap opts for this
         ),
         init::AppSubcommand::Broker => handler::Handler::Broker(broker_id),
     }

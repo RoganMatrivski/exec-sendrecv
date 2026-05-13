@@ -13,11 +13,18 @@ use crate::{
     util::{ensure_dir, find_executable_or_first},
 };
 
+#[derive(Default)]
+pub struct TicketReceiverOptions {
+    pub sync: bool,
+}
+
 pub struct TicketReceiver {
     pub node: Node,
     pub filedir: Option<PathBuf>,
     pub on_export: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_recv: Option<Arc<dyn Fn(PathBuf) + Send + Sync>>,
+
+    pub opt: TicketReceiverOptions,
 }
 
 impl fmt::Debug for TicketReceiver {
@@ -88,7 +95,7 @@ impl ProtocolHandler for TicketReceiver {
 
                 while let Some(msg) = stream.next().await {
                     match msg? {
-                        crate::codec::PeerMessages::PayloadInfo { total_size: total_bytes, ticket } => {
+                        crate::codec::PeerMessages::PayloadInfo { total_size: total_bytes, ticket, delete_targets } => {
                             let pb = crate::MPB.add(indicatif::ProgressBar::new(total_bytes));
                             pb.set_style(
                                 indicatif::ProgressStyle::with_template(
@@ -174,6 +181,12 @@ impl ProtocolHandler for TicketReceiver {
                                 }
                             }
 
+                            if self.opt.sync {
+                                for p in delete_targets {
+                                    std::fs::remove_file(&p)?;
+                                }
+                            }
+
                             let base_path = dest_root.clone();
 
                             let recv_path = if base_path.is_dir() {
@@ -197,10 +210,10 @@ impl ProtocolHandler for TicketReceiver {
 
                             tracing::info!("transfer completed successfully");
                             break;
-                            },
-                            _ => (),
-                            }
-                            };
+                        },
+                        _ => (),
+                    }
+                };
 
                 Ok(())
             }
