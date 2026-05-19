@@ -99,7 +99,7 @@ impl ProtocolHandler for TicketReceiver {
                             let pb = crate::MPB.add(indicatif::ProgressBar::new(total_bytes));
                             pb.set_style(
                                 indicatif::ProgressStyle::with_template(
-                                    "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})",
+                                    "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}); ETA: {eta}",
                                 )
                                 .map_err(|e| {
                                     tracing::error!(error = %e, "failed to create progress bar style");
