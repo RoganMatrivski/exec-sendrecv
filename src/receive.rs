@@ -181,13 +181,15 @@ impl ProtocolHandler for TicketReceiver {
                                 }
                             }
 
+                            let base_path = dest_root.clone();
+
                             if self.opt.sync {
                                 for p in delete_targets {
-                                    std::fs::remove_file(&p)?;
+                                    let path = dest_root.join(p);
+                                    tracing::trace!(?path, "Removing file");
+                                    std::fs::remove_file(path)?;
                                 }
                             }
-
-                            let base_path = dest_root.clone();
 
                             let recv_path = if base_path.is_dir() {
                                 find_executable_or_first(&base_path).unwrap_or(base_path)

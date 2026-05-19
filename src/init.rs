@@ -22,6 +22,10 @@ pub enum AppSubcommand {
     },
     Receive {
         filedir: Option<std::path::PathBuf>,
+
+        /// Sync files, not just copy
+        #[arg(long)]
+        sync: bool,
     },
     Broker,
 }

@@ -79,7 +79,7 @@ async fn main() -> Result<(), Report> {
 
     match args.command {
         init::AppSubcommand::Send { key, file } => handler::Handler::Send(broker_id, key, file),
-        init::AppSubcommand::Receive { filedir } => handler::Handler::Receive(
+        init::AppSubcommand::Receive { filedir, sync } => handler::Handler::Receive(
             broker_id,
             Some(std::sync::Arc::new(move || {
                 if let Err(e) = tx_for_export.try_send(ExecState::Export) {
@@ -92,7 +92,7 @@ async fn main() -> Result<(), Report> {
                 }
             })),
             filedir,
-            false, // TODO: Add clap opts for this
+            sync,
         ),
         init::AppSubcommand::Broker => handler::Handler::Broker(broker_id),
     }

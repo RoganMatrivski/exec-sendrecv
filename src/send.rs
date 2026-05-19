@@ -43,6 +43,13 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
         sink.send(crate::codec::PeerMessages::Ack).await?;
         sink.flush().await?;
 
+        // Make progress bar for sender to track
+        let pb = crate::MPB.add(indicatif::ProgressBar::new(0));
+        pb.set_style(indicatif::ProgressStyle::with_template(
+            "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec})",
+        )?);
+        pb.set_message("Sending");
+
         while let Some(msg) = stream.next().await {
             match msg? {
                 crate::codec::PeerMessages::DirSnapshot(snapshot) => {
@@ -99,13 +106,16 @@ pub async fn run(broker_id: &str, recv_code: &str, path: &PathBuf) -> eyre::Resu
                     tracing::warn!(e);
                 }
                 crate::codec::PeerMessages::Progress { current, total } => {
-                    // TODO: Implement these
+                    pb.set_position(current);
+                    pb.set_length(total);
                     ()
                 }
 
                 crate::codec::PeerMessages::Ack => {
                     tracing::info!("Received final Ack from receiver");
-                    break;
+                    pb.finish_with_message("Done sending");
+
+                    ()
                 }
                 _ => (),
             }
