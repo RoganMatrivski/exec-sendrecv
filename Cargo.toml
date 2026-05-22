@@ -48,7 +48,6 @@ blake3 = "1.8.5"
 tokio-util = { version = "0.7.18", features = ["codec"] }
 bytes = "1.11.1"
 tokio-serde = { version = "0.9.0", features = ["bincode"] }
-redb = "2"
 
 [target.'cfg(not(windows))'.dependencies]
 libc = "*"

@@ -1294,7 +1294,6 @@ dependencies = [
  "machineid-rs",
  "mimalloc",
  "postcard",
- "redb",
  "redis",
  "serde",
  "serde_json",

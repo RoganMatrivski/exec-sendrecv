@@ -7,7 +7,7 @@ use iroh_tickets::endpoint::EndpointTicket;
 
 use crate::{node::Node, ALPN};
 
-#[tracing::instrument(skip(node))]
+#[tracing::instrument]
 pub async fn run(node: Node, peer_ticket: EndpointTicket, path: &PathBuf) -> eyre::Result<()> {
     tracing::info!("starting send handler");
 

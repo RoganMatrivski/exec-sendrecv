@@ -127,98 +127,13 @@ pub fn resolve_broker_addr(id: &str) -> EndpointAddr {
 pub struct BrokerClient {
     endpoint: Endpoint,
     broker_addr: EndpointAddr,
-    cachedb: Arc<Option<redb::Database>>,
 }
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct CacheValue<T> {
-    exp: std::time::SystemTime,
-    dat: T,
-}
-
-impl<T> CacheValue<T> {
-    pub fn new(dat: T) -> Self {
-        Self {
-            dat,
-            exp: std::time::SystemTime::now(),
-        }
-    }
-
-    pub fn with_exp(self, exp_dur: std::time::Duration) -> Self {
-        Self {
-            exp: self.exp + exp_dur,
-            ..self
-        }
-    }
-
-    pub fn get_expiring_value(self) -> Option<T> {
-        if std::time::SystemTime::now() < self.exp {
-            Some(self.dat)
-        } else {
-            None
-        }
-    }
-}
-
-impl redb::Value for CacheValue<String> {
-    type SelfType<'a> = Self;
-    type AsBytes<'a> = Vec<u8>;
-
-    fn fixed_width() -> Option<usize> {
-        None
-    }
-
-    fn from_bytes<'a>(data: &'a [u8]) -> Self::SelfType<'a>
-    where
-        Self: 'a,
-    {
-        postcard::from_bytes(data).expect("failed to deserialize CacheValue")
-    }
-
-    fn as_bytes<'a, 'b: 'a>(value: &'a Self::SelfType<'b>) -> Vec<u8> {
-        postcard::to_allocvec(value).expect("failed to serialize CacheValue")
-    }
-
-    fn type_name() -> redb::TypeName {
-        redb::TypeName::new("CacheValue<String>")
-    }
-}
-
-const TABLE: redb::TableDefinition<&str, CacheValue<String>> =
-    redb::TableDefinition::new("receiver_lookup");
 
 impl BrokerClient {
     pub fn new(endpoint: Endpoint, broker_addr: EndpointAddr) -> Self {
-        let tempdir =
-            directories::ProjectDirs::from("com.github", "roganmatrivski", "exec-sendrecv")
-                .map(|p| p.cache_dir().to_path_buf())
-                .or_else(|| directories::BaseDirs::new().map(|b| b.cache_dir().to_path_buf()))
-                .unwrap_or_else(std::env::temp_dir);
-
-        let cachedb_res = || -> eyre::Result<_> {
-            let db = redb::Database::create(tempdir.join("cache.db"))?;
-
-            let w = db.begin_write()?;
-            let _ = w.open_table(TABLE)?;
-            w.commit()?;
-
-            Ok(Some(db))
-        }();
-
-        let cachedb = match cachedb_res {
-            Ok(db) => db,
-            Err(e) => {
-                tracing::warn!(%e, "Failed to init cache db");
-                None
-            }
-        };
-
-        let cachedb = Arc::new(cachedb);
-
         Self {
             endpoint,
             broker_addr,
-            cachedb,
         }
     }
 
@@ -296,19 +211,6 @@ impl BrokerClient {
     /// Sender calls this to ask the broker "who has code `code`?"
     #[tracing::instrument(skip(self), err)]
     pub async fn lookup(&self, code: &str) -> color_eyre::eyre::Result<EndpointTicket> {
-        if let Some(db) = self.cachedb.as_ref() {
-            let r = db.begin_read()?;
-            let t = r.open_table(TABLE)?;
-
-            if let Some(v) = t.get(code)?.and_then(|x| x.value().get_expiring_value()) {
-                tracing::debug!(code, "Cache hit");
-                use std::str::FromStr;
-                let ticket = EndpointTicket::from_str(&v)?;
-                return Ok(ticket);
-            }
-            tracing::debug!(code, "Cache miss");
-        }
-
         let mut last_error = None;
         for i in 0..5 {
             if i > 0 {
@@ -364,23 +266,7 @@ impl BrokerClient {
             .await;
 
             match res {
-                Ok(ticket) => {
-                    if let Some(db) = self.cachedb.as_ref() {
-                        tracing::debug!(code, "Updating cache");
-                        let w = db.begin_write()?;
-                        {
-                            let mut t = w.open_table(TABLE)?;
-                            t.insert(
-                                code,
-                                CacheValue::new(ticket.to_string())
-                                    .with_exp(std::time::Duration::from_hours(24)),
-                            )?;
-                        }
-                        w.commit()?;
-                    }
-
-                    return Ok(ticket);
-                }
+                Ok(ticket) => return Ok(ticket),
                 Err(e) => {
                     // If the error is "No peer registered with that code", don't retry.
                     if e.to_string().contains("No peer registered with that code") {
