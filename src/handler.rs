@@ -27,19 +27,25 @@ impl Handler {
     pub async fn run(&self) -> eyre::Result<()> {
         match self {
             Handler::Send(broker_id, recv_code, path) => {
-                crate::send::run(broker_id, recv_code, path).await?;
+                let node = Node::new(broker_id).await?;
+
+                tracing::info!("looking up receiver via broker");
+                let recv_code = recv_code.split_whitespace().collect::<Vec<_>>().join("");
+                let peer_ticket = node.broker.lookup(&recv_code).await?;
+                tracing::info!(?peer_ticket, "found receiver");
+
+                crate::send::run(node, peer_ticket, path).await?;
             }
 
             Handler::Receive(broker_id, on_export, on_recv, filedir, sync) => {
-                let node = Node::new().await?;
+                let node = Node::new(broker_id).await?;
                 let endpoint = node.endpoint().clone();
 
                 let fingerprint = get_device_code();
                 tracing::info!(id = ?endpoint.id(), "App ID: {fingerprint}");
 
-                let broker_addr = broker::resolve_broker_addr(broker_id);
                 let own_ticket = iroh_tickets::endpoint::EndpointTicket::new(endpoint.addr());
-                broker::broker_register(&endpoint, broker_addr, &fingerprint, own_ticket).await?;
+                node.broker.register(&fingerprint, own_ticket).await?;
 
                 let fingerprint = {
                     use digit_group::FormatGroup;

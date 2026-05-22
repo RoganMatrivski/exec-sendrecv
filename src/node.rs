@@ -19,10 +19,11 @@ use iroh_blobs::{
 pub struct Node {
     pub store: Store,
     pub router: Router,
+    pub broker: crate::broker::BrokerClient,
 }
 
 impl Node {
-    pub async fn new() -> eyre::Result<Self> {
+    pub async fn new(broker_addr: impl AsRef<str>) -> eyre::Result<Self> {
         let endpoint = get_endpoint_builder()?.bind().await?;
         let tempdir =
             directories::ProjectDirs::from("com.github", "roganmatrivski", "exec-sendrecv")
@@ -38,13 +39,18 @@ impl Node {
         let store = FsStore::load(tempdir).await?;
 
         let blobs_protocol = BlobsProtocol::new(&store, None);
-        let router = Router::builder(endpoint)
+        let router = Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, blobs_protocol)
             .spawn();
+
+        let brokeraddr = crate::broker::resolve_broker_addr(broker_addr.as_ref());
+        let brokerclient = crate::broker::BrokerClient::new(endpoint, brokeraddr);
+        tracing::debug!("node created");
 
         Ok(Self {
             store: store.into(),
             router,
+            broker: brokerclient,
         })
     }
 
