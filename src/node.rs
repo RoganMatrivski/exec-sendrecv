@@ -187,7 +187,7 @@ pub fn get_endpoint_builder() -> color_eyre::eyre::Result<iroh::endpoint::Builde
         .addr_filter(iroh::endpoint_info::AddrFilter::unfiltered())
         .address_lookup(iroh::address_lookup::PkarrPublisher::n0_dns())
         .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
-        .address_lookup(iroh::address_lookup::mdns::MdnsAddressLookup::builder());
+        .address_lookup(iroh_mdns_address_lookup::MdnsAddressLookup::builder());
 
     Ok(endpoint_builder)
 }
