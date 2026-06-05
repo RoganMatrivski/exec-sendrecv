@@ -6,6 +6,7 @@ use iroh_blobs::{
     api::blobs::{ExportMode, ExportOptions},
     format::collection::Collection,
 };
+use tokio::sync::Mutex;
 use tracing::Instrument;
 
 use crate::{
@@ -67,7 +68,7 @@ impl ProtocolHandler for TicketReceiver {
                 } else {
                     tempfile::tempdir()
                         .map_err(|e| {
-                            tracing::error!(error = %e, "failed to create temp output dir");
+                            tracing::error!(error = ?e, "failed to create temp output dir");
                             iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e))
                         })?
                         .keep()
@@ -75,7 +76,8 @@ impl ProtocolHandler for TicketReceiver {
 
                 tracing::info!(path = %dest_root.display(), "created destination root");
 
-                let (mut sink, mut stream) = crate::codec::peer_channel(send, recv);
+                let (sink, mut stream) = crate::codec::peer_channel(send, recv);
+                let sink = Arc::new(Mutex::new(sink));
 
                 // Wait for the sender to be ready (this triggers the accept_bi)
                 if let Some(msg) = stream.next().await {
@@ -90,8 +92,11 @@ impl ProtocolHandler for TicketReceiver {
                 }
 
                 let snapshot = crate::snapshot::Snapshot::capture(&dest_root).expect("Failed to scan output dir for changes");
-                sink.send(crate::codec::PeerMessages::DirSnapshot(snapshot)).await?;
-                sink.flush().await?;
+                {
+                    let mut s = sink.lock().await;
+                    s.send(crate::codec::PeerMessages::DirSnapshot(snapshot)).await?;
+                    s.flush().await?;
+                }
 
                 while let Some(msg) = stream.next().await {
                     match msg? {
@@ -102,11 +107,27 @@ impl ProtocolHandler for TicketReceiver {
                                     "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}); ETA: {eta}",
                                 )
                                 .map_err(|e| {
-                                    tracing::error!(error = %e, "failed to create progress bar style");
+                                    tracing::error!(error = ?e, "failed to create progress bar style");
                                     iroh::protocol::AcceptError::from(std::io::Error::new(std::io::ErrorKind::Other, e))
                                 })?,
                             );
                             pb.set_message("downloading");
+
+                            // Spawn progress reporter
+                            let sink_clone = sink.clone();
+                            let pb_clone = pb.clone();
+                            tokio::spawn(async move {
+                                loop {
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                                    let current = pb_clone.position();
+                                    let total = pb_clone.length().unwrap_or(1);
+                                    if let Ok(mut s) = sink_clone.try_lock() {
+                                        let _ = s.send(crate::codec::PeerMessages::Progress { current, total }).await;
+                                        let _ = s.flush().await;
+                                    }
+                                    if pb_clone.is_finished() { break; }
+                                }
+                            });
 
                             self.node
                                 .get_collection(ticket.hash(), ticket.addr().clone(), |bytes| {
@@ -174,8 +195,9 @@ impl ProtocolHandler for TicketReceiver {
                                 .await;
 
                                 if let Err(e) = res {
-                                    sink.send(crate::codec::PeerMessages::ErrorMsg(e.to_string())).await?;
-                                    sink.flush().await?;
+                                    let mut s = sink.lock().await;
+                                    s.send(crate::codec::PeerMessages::ErrorMsg(e.to_string())).await?;
+                                    s.flush().await?;
 
                                     return Err(e);
                                 }
@@ -206,9 +228,12 @@ impl ProtocolHandler for TicketReceiver {
                             }
 
                             tracing::info!("receiver finished; sending ack");
-                            sink.send(crate::codec::PeerMessages::Ack).await?;
-                            sink.flush().await?;
-                            sink.close().await?;
+                            {
+                                let mut s = sink.lock().await;
+                                s.send(crate::codec::PeerMessages::Ack).await?;
+                                s.flush().await?;
+                                s.close().await?;
+                            }
 
                             tracing::info!("transfer completed successfully");
                             break;
