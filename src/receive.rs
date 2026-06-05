@@ -6,7 +6,6 @@ use iroh_blobs::{
     api::blobs::{ExportMode, ExportOptions},
     format::collection::Collection,
 };
-use tokio::sync::Mutex;
 use tracing::Instrument;
 
 use crate::{
@@ -76,8 +75,8 @@ impl ProtocolHandler for TicketReceiver {
 
                 tracing::info!(path = %dest_root.display(), "created destination root");
 
-                let (sink, mut stream) = crate::codec::peer_channel(send, recv);
-                let sink = Arc::new(Mutex::new(sink));
+// In accept()
+                let (mut sink, mut stream) = crate::codec::peer_channel(send, recv);
 
                 // Wait for the sender to be ready (this triggers the accept_bi)
                 if let Some(msg) = stream.next().await {
@@ -92,11 +91,8 @@ impl ProtocolHandler for TicketReceiver {
                 }
 
                 let snapshot = crate::snapshot::Snapshot::capture(&dest_root).expect("Failed to scan output dir for changes");
-                {
-                    let mut s = sink.lock().await;
-                    s.send(crate::codec::PeerMessages::DirSnapshot(snapshot)).await?;
-                    s.flush().await?;
-                }
+                sink.send(crate::codec::PeerMessages::DirSnapshot(snapshot)).await?;
+                sink.flush().await?;
 
                 while let Some(msg) = stream.next().await {
                     match msg? {
@@ -114,16 +110,16 @@ impl ProtocolHandler for TicketReceiver {
                             pb.set_message("downloading");
 
                             // Spawn progress reporter
-                            let sink_clone = sink.clone();
+                            let mut progress_stream = conn.open_uni().await?;
                             let pb_clone = pb.clone();
                             tokio::spawn(async move {
                                 loop {
                                     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                                     let current = pb_clone.position();
                                     let total = pb_clone.length().unwrap_or(1);
-                                    if let Ok(mut s) = sink_clone.try_lock() {
-                                        let _ = s.send(crate::codec::PeerMessages::Progress { current, total }).await;
-                                        let _ = s.flush().await;
+                                    let bytes = [current.to_be_bytes(), total.to_be_bytes()].concat();
+                                    if let Err(_) = progress_stream.write_all(&bytes).await {
+                                        break;
                                     }
                                     if pb_clone.is_finished() { break; }
                                 }
@@ -195,9 +191,8 @@ impl ProtocolHandler for TicketReceiver {
                                 .await;
 
                                 if let Err(e) = res {
-                                    let mut s = sink.lock().await;
-                                    s.send(crate::codec::PeerMessages::ErrorMsg(e.to_string())).await?;
-                                    s.flush().await?;
+                                    sink.send(crate::codec::PeerMessages::ErrorMsg(e.to_string())).await?;
+                                    sink.flush().await?;
 
                                     return Err(e);
                                 }
@@ -228,12 +223,9 @@ impl ProtocolHandler for TicketReceiver {
                             }
 
                             tracing::info!("receiver finished; sending ack");
-                            {
-                                let mut s = sink.lock().await;
-                                s.send(crate::codec::PeerMessages::Ack).await?;
-                                s.flush().await?;
-                                s.close().await?;
-                            }
+                            sink.send(crate::codec::PeerMessages::Ack).await?;
+                            sink.flush().await?;
+                            sink.close().await?;
 
                             tracing::info!("transfer completed successfully");
                             break;

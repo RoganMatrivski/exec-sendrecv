@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use color_eyre::eyre::{self, Context};
-use futures::{SinkExt, StreamExt};
+use futures::{AsyncReadExt, SinkExt, StreamExt};
 use iroh_blobs::ticket::BlobTicket;
 use iroh_tickets::endpoint::EndpointTicket;
 
@@ -21,9 +21,8 @@ pub async fn run(node: Node, peer_ticket: EndpointTicket, path: &PathBuf) -> eyr
     let (send, recv) = conn.open_bi().await?;
     tracing::info!("Bidi-stream opened");
 
-    let (mut sink, mut stream) = crate::codec::peer_channel(send, recv);
-
     // Send an initial message to trigger the receiver's accept_bi()
+    let (mut sink, mut stream) = crate::codec::peer_channel(send, recv);
     sink.send(crate::codec::PeerMessages::Ack).await?;
     sink.flush().await?;
 
@@ -34,6 +33,7 @@ pub async fn run(node: Node, peer_ticket: EndpointTicket, path: &PathBuf) -> eyr
     )?);
     pb.set_message("Sending");
 
+    // Start consuming stream, we'll accept uni-stream when we know it's coming
     while let Some(msg) = stream.next().await {
         match msg? {
             crate::codec::PeerMessages::DirSnapshot(snapshot) => {
@@ -72,7 +72,7 @@ pub async fn run(node: Node, peer_ticket: EndpointTicket, path: &PathBuf) -> eyr
                 tracing::debug!(
                     ticket_addr = ?ticket.addr(),
                     ticket_hash = %ticket.hash(),
-                    ticket_format = ?ticket.format(),
+                    ticket_format = %ticket.format(),
                     "built blob ticket"
                 );
 
@@ -82,16 +82,29 @@ pub async fn run(node: Node, peer_ticket: EndpointTicket, path: &PathBuf) -> eyr
                     delete_targets: deleted,
                 })
                 .await?;
+
+                // Now we expect the uni-stream
+                let mut progress_stream = conn.accept_uni().await?;
+
+                let pb_clone = pb.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 16];
+                    while progress_stream.read_exact(&mut buf).await.is_ok() {
+                        let current = u64::from_be_bytes(buf[0..8].try_into().unwrap());
+                        let total = u64::from_be_bytes(buf[8..16].try_into().unwrap());
+                        pb_clone.set_position(current);
+                        pb_clone.set_length(total);
+                    }
+                });
+            }
+
+            crate::codec::PeerMessages::PayloadInfo { .. } => {
+                // Ignore, was local echo
             }
 
             crate::codec::PeerMessages::ErrorMsg(e) => {
                 // TODO: Properly handle error from peer and stop execution gracefully.
                 tracing::warn!(e);
-            }
-            crate::codec::PeerMessages::Progress { current, total } => {
-                pb.set_position(current);
-                pb.set_length(total);
-                ()
             }
 
             crate::codec::PeerMessages::Ack => {
