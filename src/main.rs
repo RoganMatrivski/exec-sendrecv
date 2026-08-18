@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::{io::Stderr, sync::LazyLock};
 
 use color_eyre::Report;
 use init::ProgressBarLogWriter;
