@@ -2,7 +2,8 @@
 name = "exec-sendrecv"
 version = "0.3.1"
 authors = ["Robin Mauritz <robinmauritzrm@gmail.com>"]
-edition = "2021"
+# this was 2021 due to my template project pls don't witch hunt me i'm not using ai for this-
+edition = "2024"
 repository = "https://github.com/RoganMatrivski/exec-sendrecv"
 license = "MIT OR Apache-2.0"
 description = "i'unno"
