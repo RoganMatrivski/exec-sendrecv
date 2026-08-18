@@ -15,41 +15,16 @@ mimalloc = "^0.1.48"
 [dependencies]
 clap = { version = "^4.5", features = ["derive"] }
 color-eyre = { version = "0.6.3", features = ["capture-spantrace"] }
-dashmap = "6.1.0"
-data-encoding = "2.11.0"
-digit_group = "0.1.0"
 dotenvy = "0.15.7"
 eyre = "0.6.12"
-futures = "0.3.32"
-futures-util = "0.3.32"
 indicatif = "0.18.4"
-iroh = { version = "1.0.0-rc.1", features = ["test-utils"] }
-iroh-blobs = "0.102.0"
-iroh-tickets = "1.0.0-rc.1"
-# Lookup things
-iroh-mdns-address-lookup = { git = "https://github.com/n0-computer/iroh-address-lookups" }
-redis = { version = "1.2.1", features = ["tls-rustls", "tokio-native-tls-comp"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-sha2 = "0.11.0-rc.5"
-supports-color = "3.0.2"
-tempfile = "3.27.0"
-tokio = { version = "1.52.1", features = ["rt", "signal"] }
 tracing = "0.1.41"
 tracing-error = "0.2.1"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-walkdir = "2.5.0"
-dunce = "1.0.5"
-machineid-rs = { git = "https://github.com/RoganMatrivski/machineid-rs", version = "1.2.4" }
-directories = "6.0.0"
-postcard = "1.1.3"
 sysinfo = "0.38.4"
-fs4 = { version = "1.1.0", features = ["tokio"] }
-backon = { version = "1.6.0", default-features = false, features = ["futures-timer", "futures-timer-sleep", "tokio"] }
-blake3 = "1.8.5"
-tokio-util = { version = "0.7.18", features = ["codec"] }
-bytes = "1.11.1"
-tokio-serde = { version = "0.9.0", features = ["bincode"] }
+supports-color = "3.0.2"
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+patchsync = { git = "https://github.com/RoganMatrivski/patchsync", version = "0.1.0" }
 
 [target.'cfg(not(windows))'.dependencies]
 libc = "*"
