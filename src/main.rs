@@ -133,6 +133,8 @@ pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> ey
         .accept(patchsync::ALPN, protocol_handler)
         .spawn();
 
+    std::fs::create_dir_all(&root)?;
+
     let _recv_evloop = tokio::spawn(async move {
         for _e in ev_rx {
             // no-op. idk what to display on recv.
