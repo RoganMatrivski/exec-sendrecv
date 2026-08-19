@@ -1,6 +1,6 @@
 [package]
 name = "exec-sendrecv"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["Robin Mauritz <robinmauritzrm@gmail.com>"]
 # this was 2021 due to my template project pls don't witch hunt me i'm not using ai for this-
 edition = "2024"
