@@ -60,7 +60,8 @@ pub fn initialize() -> Result<Args, Report> {
 
     let env_filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("warn"))
-        .add_directive(format!("{}={}", pkg_name!(), crate_level).parse().unwrap());
+        .add_directive(format!("{}={}", pkg_name!(), crate_level).parse().unwrap())
+        .add_directive(format!("patchsync={}", crate_level).parse().unwrap());
 
     let fmt_layer = fmt::layer()
         .with_writer(|| crate::MPB.mpb_writer())
