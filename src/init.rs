@@ -8,8 +8,6 @@ pub struct Args {
     #[arg(short, long, action = clap::ArgAction::Count)]
     pub verbose: u8,
 
-    pub broker_id: String,
-
     #[command(subcommand)]
     pub command: AppSubcommand,
 }
@@ -17,17 +15,13 @@ pub struct Args {
 #[derive(clap::Subcommand)]
 pub enum AppSubcommand {
     Send {
-        key: String,
-        file: std::path::PathBuf,
+        recv_code: String,
+        root: std::path::PathBuf,
     },
     Receive {
-        filedir: Option<std::path::PathBuf>,
-
-        /// Sync files, not just copy
-        #[arg(long)]
-        sync: bool,
+        root: std::path::PathBuf,
+        install: bool,
     },
-    Broker,
 }
 
 const VERBOSE_LEVELS: &[&str] = &["info", "debug", "trace"];
@@ -42,7 +36,7 @@ pub fn initialize() -> Result<Args, Report> {
 
     use tracing_error::ErrorLayer;
     use tracing_subscriber::prelude::*;
-    use tracing_subscriber::{fmt, EnvFilter};
+    use tracing_subscriber::{EnvFilter, fmt};
 
     let supports_color = supports_color::on(supports_color::Stream::Stderr).is_some();
 
