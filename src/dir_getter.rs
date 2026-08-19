@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use directories::ProjectDirs;
 
-pub fn get_config_dir(install: bool) -> eyre::Result<Option<PathBuf>> {
+pub fn get_data_dir(install: bool) -> eyre::Result<Option<PathBuf>> {
     let Some(dir) = ProjectDirs::from("id.my", "rgmtrv", "exec_sendrecv") else {
         return Ok(None);
     };

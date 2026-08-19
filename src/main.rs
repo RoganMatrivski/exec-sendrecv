@@ -5,7 +5,7 @@ use eyre::Context;
 use init::ProgressBarLogWriter;
 
 mod broker;
-mod config_getter;
+mod dir_getter;
 mod init;
 
 pub static MPB: LazyLock<ProgressBarLogWriter<Stderr>> =
@@ -89,7 +89,7 @@ pub async fn handle_send(
 }
 
 pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> eyre::Result<()> {
-    let cfg_path = config_getter::get_config_dir(install)?;
+    let cfg_path = dir_getter::get_data_dir(install)?;
 
     let keyfile = cfg_path.map(|x| x.join("app.key"));
 
