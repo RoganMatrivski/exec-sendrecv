@@ -16,6 +16,7 @@ pub fn get_config_dir(install: bool) -> eyre::Result<Option<PathBuf>> {
     let path = if data_projdir.try_exists()? {
         data_projdir
     } else {
+        std::fs::create_dir_all(dir.cache_dir())?;
         dir.cache_dir()
     };
 
