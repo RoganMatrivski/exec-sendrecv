@@ -19,8 +19,9 @@ pub enum AppSubcommand {
         root: std::path::PathBuf,
     },
     Receive {
-        root: std::path::PathBuf,
+        #[arg(long)]
         install: bool,
+        root: std::path::PathBuf,
     },
 }
 
