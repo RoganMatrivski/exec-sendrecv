@@ -42,3 +42,8 @@ opt-level = 3
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[workspace.metadata.release]
+publish = false
+tag = true
+push = true
