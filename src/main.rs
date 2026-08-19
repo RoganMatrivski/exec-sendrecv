@@ -95,6 +95,7 @@ pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> ey
 
     let key = match keyfile {
         Some(path) if !path.exists() => {
+            tracing::debug!("Key not exist. Generating");
             let keybytes = iroh::SecretKey::generate();
             if let Err(e) = std::fs::write(path, keybytes.to_bytes()) {
                 tracing::warn!("Failed to persist key to disk: {e}");
@@ -103,6 +104,7 @@ pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> ey
             keybytes
         }
         Some(path) => {
+            tracing::debug!("Key exist. Loading");
             let keybytes = std::fs::read(path).wrap_err("Failed to read key from disk")?;
             iroh::SecretKey::from_bytes(
                 &keybytes

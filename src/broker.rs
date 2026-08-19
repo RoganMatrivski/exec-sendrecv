@@ -3,9 +3,10 @@ use eyre::Context;
 const IROH_BROKER_URL: &str = "https://iroh-broker.rgmtrv.my.id";
 
 pub async fn set(ticket: iroh_tickets::endpoint::EndpointTicket) -> eyre::Result<String> {
+    let endpoint_id = ticket.endpoint_addr().id.to_string();
     reqwest::Client::default()
         .post(format!("{IROH_BROKER_URL}/register"))
-        .body(ticket.to_string())
+        .body(ticket.to_string() + "," + &endpoint_id)
         .send()
         .await
         .wrap_err("Failed to send ticket to broker")?
