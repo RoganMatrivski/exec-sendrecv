@@ -22,3 +22,27 @@ pub fn get_data_dir(install: bool) -> eyre::Result<Option<PathBuf>> {
 
     Ok(Some(path.to_path_buf()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_data_dir_no_install() {
+        let res = get_data_dir(false);
+        assert!(res.is_ok());
+        if let Ok(Some(path)) = res {
+            assert!(!path.as_os_str().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_get_data_dir_install() {
+        let res = get_data_dir(true);
+        assert!(res.is_ok());
+        if let Ok(Some(path)) = res {
+            assert!(path.exists());
+        }
+    }
+}
+

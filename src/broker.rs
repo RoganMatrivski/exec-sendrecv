@@ -30,3 +30,15 @@ pub async fn get(
         .parse::<iroh_tickets::endpoint::EndpointTicket>()
         .wrap_err("Failed to parse ticket from broker response")
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_clean_code_whitespace() {
+        let raw_code = "  abc  123 \t def\n ";
+        let cleaned = raw_code.split_whitespace().collect::<String>();
+        assert_eq!(cleaned, "abc123def");
+    }
+}
+
+

@@ -82,3 +82,56 @@ impl ExecRunner {
         };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_exec_runner_kill_when_idle() {
+        let runner = ExecRunner::spawn_task();
+        assert!(runner.kill().is_ok());
+        runner.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_exec_runner_spawn_and_kill() {
+        let runner = ExecRunner::spawn_task();
+        let exe = std::env::current_exe().expect("Should get current exe");
+
+        assert!(runner.spawn(exe.clone()).is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(runner.kill().is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        runner.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_exec_runner_multiple_spawns() {
+        let runner = ExecRunner::spawn_task();
+        let exe = std::env::current_exe().expect("Should get current exe");
+
+        assert!(runner.spawn(exe.clone()).is_ok());
+        // Second spawn while first is running should be safely ignored
+        assert!(runner.spawn(exe).is_ok());
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(runner.kill().is_ok());
+
+        runner.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_exec_runner_nonexistent_binary() {
+        let runner = ExecRunner::spawn_task();
+        let nonexistent = PathBuf::from("non_existent_binary_12345");
+
+        assert!(runner.spawn(nonexistent).is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        runner.shutdown().await;
+    }
+}
+

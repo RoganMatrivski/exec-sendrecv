@@ -951,6 +951,7 @@ dependencies = [
  "reqwest",
  "supports-color",
  "sysinfo",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-error",

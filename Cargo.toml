@@ -38,6 +38,10 @@ ignore = "0.4.33"
 [target.'cfg(not(windows))'.dependencies]
 libc = "*"
 
+[dev-dependencies]
+tempfile = "3"
+
+
 [profile.dev.package."*"]
 opt-level = 3
 

@@ -124,3 +124,77 @@ impl Default for ProgressBarLogWriter<std::io::Stderr> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_parse_send_subcommand() {
+        let args = Args::try_parse_from(["exec-sendrecv", "send", "CODE123", "/path/to/source"])
+            .expect("Should parse send command");
+        assert_eq!(args.verbose, 0);
+        match args.command {
+            AppSubcommand::Send { recv_code, root } => {
+                assert_eq!(recv_code, "CODE123");
+                assert_eq!(root, std::path::PathBuf::from("/path/to/source"));
+            }
+            _ => panic!("Expected Send subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_receive_subcommand() {
+        let args = Args::try_parse_from(["exec-sendrecv", "receive", "/path/to/dest"])
+            .expect("Should parse receive command");
+        assert_eq!(args.verbose, 0);
+        match args.command {
+            AppSubcommand::Receive { root, install } => {
+                assert_eq!(root, std::path::PathBuf::from("/path/to/dest"));
+                assert!(!install);
+            }
+            _ => panic!("Expected Receive subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_receive_install_flag() {
+        let args = Args::try_parse_from([
+            "exec-sendrecv",
+            "-vv",
+            "receive",
+            "--install",
+            "/path/to/dest",
+        ])
+        .expect("Should parse receive with install and verbose flags");
+        assert_eq!(args.verbose, 2);
+        match args.command {
+            AppSubcommand::Receive { root, install } => {
+                assert_eq!(root, std::path::PathBuf::from("/path/to/dest"));
+                assert!(install);
+            }
+            _ => panic!("Expected Receive subcommand"),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_subcommand() {
+        let res = Args::try_parse_from(["exec-sendrecv", "unknown"]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_progress_bar_log_writer() {
+        use std::io::Write;
+        let mut buffer = Vec::new();
+        let mpb = indicatif::MultiProgress::new();
+        let mut writer = ProgressBarLogWriter::new(&mut buffer, mpb);
+
+        writer.write_all(b"hello world\n").expect("write should succeed");
+        writer.flush().expect("flush should succeed");
+
+        assert_eq!(buffer, b"hello world\n");
+    }
+}
+
