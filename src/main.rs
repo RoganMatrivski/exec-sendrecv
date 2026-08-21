@@ -129,7 +129,7 @@ pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> ey
     let ticket = iroh_tickets::endpoint::EndpointTicket::new(endpoint.addr());
 
     let code = broker::set(ticket).await?;
-    println!("Receiver code: {code}");
+    MPB.println(format!("Receiver code: {code}"))?;
 
     let runner = std::sync::Arc::new(proc_handler::ExecRunner::spawn_task());
     // let mut executable_path: Option<std::path::PathBuf> = None;
