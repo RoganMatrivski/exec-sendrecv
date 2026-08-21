@@ -6,7 +6,9 @@ use init::ProgressBarLogWriter;
 
 mod broker;
 mod dir_getter;
+mod get_executable;
 mod init;
+mod proc_handler;
 
 pub static MPB: LazyLock<ProgressBarLogWriter<Stderr>> =
     LazyLock::new(|| ProgressBarLogWriter::default());
@@ -38,6 +40,8 @@ async fn main() -> Result<(), Report> {
 }
 
 use iroh::endpoint::{Endpoint, presets};
+
+use crate::get_executable::get_executable;
 
 pub async fn handle_send(
     recv_code: impl std::fmt::Display,
@@ -127,6 +131,9 @@ pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> ey
     let code = broker::set(ticket).await?;
     println!("Receiver code: {code}");
 
+    let runner = std::sync::Arc::new(proc_handler::ExecRunner::spawn_task());
+    // let mut executable_path: Option<std::path::PathBuf> = None;
+
     let (ev_tx, ev_rx) = flume::unbounded();
     let protocol_handler = patchsync::RecvProtocol::new(root.as_ref().to_path_buf(), ev_tx);
     let router = iroh::protocol::Router::builder(endpoint)
@@ -135,14 +142,57 @@ pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> ey
 
     std::fs::create_dir_all(&root)?;
 
+    let pb = MPB.add(indicatif::ProgressBar::new_spinner().with_style(
+        indicatif::ProgressStyle::with_template("{spinner:.green} {bytes} received")?,
+    ));
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let main_runner = runner.clone();
+
+    let root_clone = root.as_ref().to_path_buf();
     let _recv_evloop = tokio::spawn(async move {
-        for _e in ev_rx {
-            // no-op. idk what to display on recv.
+        for e in ev_rx {
+            match e {
+                patchsync::sync::RecvEvent::EntryPreApply => {
+                    runner
+                        .kill()
+                        .expect("Failed to kill exec through channel. This shouldn't've happen.");
+                }
+                patchsync::sync::RecvEvent::EntryPostApply => {
+                    if let Some(exec) = get_executable(&root_clone) {
+                        tracing::info!(exec = exec.to_str(), "Running executable");
+                        runner.spawn(exec.clone()).expect(
+                            "Failed to spawn exec through channel. This shouldn't've happen.",
+                        );
+                    } else {
+                        tracing::warn!(
+                            "No executable found under {}.",
+                            root_clone.to_string_lossy()
+                        )
+                    };
+                }
+                patchsync::sync::RecvEvent::Progress { bytes } => {
+                    pb.inc(bytes as u64);
+                }
+                patchsync::sync::RecvEvent::Finished => {
+                    pb.finish_and_clear();
+                }
+                patchsync::sync::RecvEvent::Error(e) => {
+                    tracing::warn!(e, "RECV ERR")
+                }
+                _ => {}
+            }
         }
     });
 
     tokio::signal::ctrl_c().await?;
     router.shutdown().await?;
+
+    // Shutdown the handler
+    std::sync::Arc::try_unwrap(main_runner)
+        .expect("Failed to get runner handle. This shouldn't've happen.")
+        .shutdown()
+        .await;
 
     Ok(())
 }
