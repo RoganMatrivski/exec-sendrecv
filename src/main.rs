@@ -132,7 +132,6 @@ pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> ey
     MPB.println(format!("Receiver code: {code}"))?;
 
     let runner = std::sync::Arc::new(proc_handler::ExecRunner::spawn_task());
-    // let mut executable_path: Option<std::path::PathBuf> = None;
 
     let (ev_tx, ev_rx) = flume::unbounded();
     let protocol_handler = patchsync::RecvProtocol::new(root.as_ref().to_path_buf(), ev_tx);
