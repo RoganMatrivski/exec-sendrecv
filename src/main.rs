@@ -150,7 +150,7 @@ pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> ey
     let main_runner = runner.clone();
 
     let root_clone = root.as_ref().to_path_buf();
-    let _recv_evloop = tokio::spawn(async move {
+    let recv_evloop = tokio::spawn(async move {
         for e in ev_rx {
             match e {
                 patchsync::sync::RecvEvent::EntryPreApply => {
@@ -187,6 +187,7 @@ pub async fn handle_recv(root: impl AsRef<std::path::Path>, install: bool) -> ey
 
     tokio::signal::ctrl_c().await?;
     router.shutdown().await?;
+    recv_evloop.await.expect("recv evloop task panicked");
 
     // Shutdown the handler
     std::sync::Arc::try_unwrap(main_runner)
